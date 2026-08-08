@@ -1,11 +1,14 @@
 #include <forevervalidator/experimental/physics_sandbox.h>
 
 #include "engine/game/game_ctn_block_info.h"
+#include "engine/game/material_definition.h"
 #include "engine/game/material_render_definition.h"
 #include "engine/game/material_texture_asset_source.h"
 #include "engine/rendering/plug_tree.h"
+#include "engine/scene/plug_solid.h"
 #include "engine/scene/static_scene_model.h"
 #include "format/static_solid/static_solid_geometry_decoder.h"
+#include "format/static_solid/static_scene_archive_loader.h"
 #include "simulation/replay/replay_scene_surface_resolution.h"
 #include "simulation/runtime/replay_simulation_session.h"
 #include "simulation/runtime/physics_sandbox_texture_assets.h"
@@ -138,6 +141,19 @@ private:
     std::vector<std::byte> bytes_;
     bool fail_ = false;
     mutable std::uint32_t readCount_ = 0u;
+};
+
+class EmptyMaterialRepository final : public MaterialAssetRepository {
+public:
+    std::optional<ResolvedMaterialDefinition> ResolveMaterial(
+            std::string_view) override {
+        return std::nullopt;
+    }
+
+    std::optional<ResolvedMaterialDefinition> ResolveMaterialPath(
+            std::string_view) override {
+        return std::nullopt;
+    }
 };
 
 void AppendFloat(std::vector<std::uint8_t> *bytes, float value) {
@@ -274,8 +290,85 @@ bool TestProvenanceAndImmutableScene() {
                     PhysicsSandboxRenderSceneHandle;
     static_assert(std::is_same_v<Handle, std::shared_ptr<const Scene>>);
     const Handle scene = std::make_shared<const Scene>();
+    const Handle clonedVehicleScene = scene;
     okay &= Check(scene->meshes.empty() && scene->instances.empty(),
                   "immutable render-scene handle was not readable");
+    okay &= Check(
+            clonedVehicleScene.get() == scene.get() &&
+                    clonedVehicleScene.use_count() == scene.use_count(),
+            "cloned sandbox presentation state did not share its immutable "
+            "vehicle scene");
+    return okay;
+}
+
+bool TestReusableLocalRenderSceneBuilder() {
+    std::vector<GxVertex> vertices(3u);
+    vertices[0].position = {-1.0f, 0.0f, 0.0f};
+    vertices[1].position = {1.0f, 0.0f, 0.0f};
+    vertices[2].position = {0.0f, 1.0f, 0.0f};
+    for (GxVertex &vertex : vertices) {
+        vertex.normal = {0.0f, 0.0f, 1.0f};
+    }
+    CMwNodRef<CPlugVisualIndexedTriangles> visual =
+            MakeMwNod<CPlugVisualIndexedTriangles>();
+    visual->SetOwnedGeometry(
+            std::move(vertices), {0u, 1u, 2u});
+    visual->SetBoundingMinMax(
+            {-1.0f, 0.0f, 0.0f},
+            {1.0f, 1.0f, 0.0f});
+
+    auto root = std::make_unique<CPlugTree>();
+    root->SetIsRooted(1);
+    GmIso4 local;
+    local.SetIdentity();
+    local.SetTranslation({1.0f, 2.0f, 3.0f});
+    root->SetUseLocation(1);
+    root->SetLocation(local);
+    root->SetVisual(visual.Get(), nullptr, nullptr, 0);
+
+    CMwNodRef<CPlugSolid> solid = MakeMwNod<CPlugSolid>();
+    solid->SetOwnedTree(std::move(root), 0);
+    GmIso4 identity;
+    identity.SetIdentity();
+    StaticSceneModel model(
+            StaticSolidPrototype(solid.Get()),
+            identity,
+            StaticScenePurpose::Generated);
+    StaticSceneModelCollection models;
+    bool okay = Check(
+            models.Add(std::move(model)),
+            "local visual model could not be stored");
+    const auto scene = BuildPhysicsSandboxRenderScene(models);
+    okay &= Check(
+            scene && scene->meshes.size() == 1u &&
+                    scene->instances.size() == 1u &&
+                    scene->meshes[0].vertices.size() == 3u &&
+                    scene->instances[0].meshIndex == 0u &&
+                    NearlyEqual(
+                            scene->instances[0].worldTransform.translation.x,
+                            1.0f) &&
+                    NearlyEqual(
+                            scene->instances[0].worldTransform.translation.y,
+                            2.0f) &&
+                    NearlyEqual(
+                            scene->instances[0].worldTransform.translation.z,
+                            3.0f),
+            "reusable render-scene builder did not preserve local geometry");
+
+    forevervalidator::experimental::PhysicsSandboxCarState car;
+    car.wheelGroundPosition[2] = {4.0f, 5.0f, 6.0f};
+    okay &= Check(
+            NearlyEqual(car.wheelGroundPosition[2].x, 4.0f) &&
+                    NearlyEqual(car.wheelGroundPosition[2].y, 5.0f) &&
+                    NearlyEqual(car.wheelGroundPosition[2].z, 6.0f),
+            "public wheel-ground position state was not writable");
+
+    EmptyMaterialRepository materialRepository;
+    StaticSolidArchiveLoadSession archive;
+    archive.InstallMaterialAssets(materialRepository);
+    okay &= Check(
+            archive.MaterialAssets() == &materialRepository,
+            "vehicle archive did not retain its material repository");
     return okay;
 }
 
@@ -501,6 +594,7 @@ int main() {
     bool okay = TestUvDecoding();
     okay &= TestTransformComposition();
     okay &= TestProvenanceAndImmutableScene();
+    okay &= TestReusableLocalRenderSceneBuilder();
     okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();

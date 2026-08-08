@@ -851,6 +851,11 @@ void ClassifyPhysicsSandboxRenderLayers(
     ClassifyRenderLayers(scene);
 }
 
+sandbox::PhysicsSandboxRenderSceneHandle BuildPhysicsSandboxRenderScene(
+        const StaticSceneModelCollection &models) {
+    return BuildStaticRenderScene(models);
+}
+
 struct ReplaySimulationInstance {
     CTrackManiaRace race;
     std::unique_ptr<ReplaySimulationRuntime> runtime;
@@ -1162,7 +1167,7 @@ bool ReplaySimulationSession::InstallStaticScene(
         StaticSceneModelCollection models) {
     std::vector<ReplayStaticCollisionTriangle> triangles;
     sandbox::PhysicsSandboxRenderSceneHandle renderScene =
-            BuildStaticRenderScene(models);
+            BuildPhysicsSandboxRenderScene(models);
     forevervalidator::simulation::CudaHostScene cudaScene;
     if (impl->backend == forevervalidator::SimulationBackend::Cuda) {
         const auto cudaBuild =
@@ -1565,6 +1570,7 @@ ReplaySimulationSession::CurrentState() const {
     result.gearChanged = camera.gearChanged;
     result.wheelContact = camera.wheelContact;
     result.wheelHasSurface = camera.wheelHasSurface;
+    result.wheelGroundPosition = camera.wheelGroundPosition;
     result.cameraSupportUp = camera.cameraSupportUp;
     const CSceneVehicleCar::SConditionState condition =
             impl->instance.runtime->CurrentConditionState();
