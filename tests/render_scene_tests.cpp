@@ -8,14 +8,17 @@
 #include "engine/scene/plug_solid.h"
 #include "engine/scene/static_scene_model.h"
 #include "format/archive/archive_class_ids.h"
+#include "format/static_solid/default_vehicle_solid_archive.h"
 #include "format/static_solid/static_solid_geometry_decoder.h"
 #include "format/static_solid/static_scene_archive_loader.h"
+#include "format/static_solid/static_solid_archive_graph_writer.h"
 #include "format/static_solid/static_solid_archive_node_graph.h"
 #include "format/static_solid/static_solid_material_definition_resolver.h"
 #include "simulation/replay/replay_scene_surface_resolution.h"
 #include "simulation/runtime/replay_simulation_session.h"
 #include "simulation/runtime/physics_sandbox_texture_assets.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -581,6 +584,149 @@ bool TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot() {
     return okay;
 }
 
+bool AddVehicleCollisionPayload(
+        CGameCtnReplayStaticSolidArchiveGraph *graph,
+        StaticSolidArchiveId payload,
+        float bodyHalfExtent,
+        float wheelRadius) {
+    static constexpr std::array<const char *, 5u> TreeNames{
+            "BodySurf",
+            "FLSurf",
+            "FRSurf",
+            "RRSurf",
+            "RLSurf",
+    };
+    CGameCtnReplayStaticSolidArchiveGraphWriter writer(graph, payload);
+    for (u32 index = 0u; index < TreeNames.size(); ++index) {
+        const ArchiveNodeReference tree =
+                ArchiveNodeReference::FromIndex(index * 3u);
+        const ArchiveNodeReference surface =
+                ArchiveNodeReference::FromIndex(index * 3u + 1u);
+        const ArchiveNodeReference geometry =
+                ArchiveNodeReference::FromIndex(index * 3u + 2u);
+        const auto identity =
+                CGameCtnReplayStaticSolidArchiveNodeIdentity::
+                        FromPayloadAndArchiveIndex(payload, geometry.Index());
+        if (!writer.AppendNode(tree, TMNF_CLASS_CPlugTree) ||
+            !writer.AppendNode(surface, TMNF_CLASS_CPlugSurface) ||
+            !writer.AppendNode(geometry, TMNF_CLASS_CPlugSurfaceGeom)) {
+            return false;
+        }
+        writer.SetTreeId(
+                tree,
+                CMwId::CreateFromLocalName(TreeNames[index]),
+                TreeNames[index]);
+
+        GmIso4 localTransform;
+        localTransform.SetIdentity();
+        CGameCtnReplayStaticSolidArchiveTreeStateDefinition treeState;
+        treeState.Install(
+                CGameCtnReplayStaticSolidArchiveNodeIdentity::
+                        FromPayloadAndArchiveIndex(payload, tree.Index()),
+                0u,
+                CGameCtnReplayStaticSolidArchiveTreeStateDefinition::
+                        Scope::Complete,
+                CPlugTree::SFlags{},
+                1u,
+                &localTransform);
+        if (!graph->TreeGraph().AddTreeState(treeState) ||
+            !writer.AddTreeSurfaceLink(tree, surface) ||
+            !writer.AddSurfaceGeometryLink(
+                    surface, geometry, 0u, 0u, 1u)) {
+            return false;
+        }
+
+        const float halfExtent =
+                index == 0u ? bodyHalfExtent : wheelRadius;
+        CGameCtnReplayStaticSolidArchiveSurfaceGeometryDefinition definition;
+        definition.Install(
+                identity,
+                1u,
+                static_cast<std::uint16_t>(
+                        EPlugSurfaceMaterialId_Concrete),
+                GmBoxAligned{
+                        {0.0f, 0.0f, 0.0f},
+                        {halfExtent, halfExtent, halfExtent}},
+                CGameCtnReplayStaticSolidArchiveMeshPayload::Empty());
+        if (!graph->SurfaceGraph().AddSurfaceGeometryDefinition(
+                    definition)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::unique_ptr<CPlugTree> BuildVehicleCollisionTree() {
+    static constexpr std::array<const char *, 5u> TreeNames{
+            "BodySurf",
+            "FLSurf",
+            "FRSurf",
+            "RRSurf",
+            "RLSurf",
+    };
+    auto root = std::make_unique<CPlugTree>();
+    root->SetIsRooted(1);
+    for (const char *name : TreeNames) {
+        auto child = std::make_unique<CPlugTree>();
+        child->SetPlugId(CMwId::CreateFromLocalName(name));
+        child->SetIsRooted(1);
+        root->AddOwnedChild(std::move(child));
+    }
+    return root;
+}
+
+bool TestVehiclePhysicsUsesSelectedArchivePayload() {
+    constexpr float WrongPayloadRadius = 0.25f;
+    constexpr float SelectedPayloadRadius = 0.75f;
+    constexpr float WrongBodyHalfExtent = 1.0f;
+    constexpr float SelectedBodyHalfExtent = 3.0f;
+    const StaticSolidArchiveId wrongPayload =
+            StaticSolidArchiveId::FromIndex(0u);
+    const StaticSolidArchiveId selectedPayload =
+            StaticSolidArchiveId::FromIndex(1u);
+
+    CGameCtnReplayStaticSolidArchiveGraph graph;
+    bool okay = Check(
+            AddVehicleCollisionPayload(
+                    &graph,
+                    wrongPayload,
+                    WrongBodyHalfExtent,
+                    WrongPayloadRadius) &&
+                    AddVehicleCollisionPayload(
+                            &graph,
+                            selectedPayload,
+                            SelectedBodyHalfExtent,
+                            SelectedPayloadRadius),
+            "two-payload vehicle archive fixture could not be built");
+    std::unique_ptr<CPlugTree> collisionRoot =
+            BuildVehicleCollisionTree();
+    ReplayVehicleSolidDefinition definitions;
+    okay &= Check(
+            default_vehicle_solid_archive_detail::ExtractWheelDefinitions(
+                    graph,
+                    selectedPayload,
+                    collisionRoot.get(),
+                    definitions),
+            "selected vehicle payload physics could not be extracted");
+    for (const auto &wheel : definitions.wheels) {
+        okay &= Check(
+                wheel.has_value() &&
+                        NearlyEqual(
+                                wheel->rollingRadius,
+                                SelectedPayloadRadius),
+                "vehicle wheel physics came from payload zero");
+    }
+    const auto &shapes =
+            definitions.collisionModel.ShapesInArchiveOrder();
+    okay &= Check(
+            !shapes.empty() &&
+                    NearlyEqual(
+                            shapes.front().shape.localBounds.halfExtents.y,
+                            SelectedBodyHalfExtent),
+            "vehicle body physics came from payload zero");
+    return okay;
+}
+
 bool TestLazyTextureAssetResolver() {
     using forevervalidator::experimental::
             PhysicsSandboxTextureAssetEncoding;
@@ -806,6 +952,7 @@ int main() {
     okay &= TestReusableLocalRenderSceneBuilder();
     okay &= TestRenderMaterialPreservesSemanticPaths();
     okay &= TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot();
+    okay &= TestVehiclePhysicsUsesSelectedArchivePayload();
     okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();
