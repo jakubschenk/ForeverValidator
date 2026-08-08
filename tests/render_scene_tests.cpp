@@ -7,8 +7,11 @@
 #include "engine/rendering/plug_tree.h"
 #include "engine/scene/plug_solid.h"
 #include "engine/scene/static_scene_model.h"
+#include "format/archive/archive_class_ids.h"
 #include "format/static_solid/static_solid_geometry_decoder.h"
 #include "format/static_solid/static_scene_archive_loader.h"
+#include "format/static_solid/static_solid_archive_node_graph.h"
+#include "format/static_solid/static_solid_material_definition_resolver.h"
 #include "simulation/replay/replay_scene_surface_resolution.h"
 #include "simulation/runtime/replay_simulation_session.h"
 #include "simulation/runtime/physics_sandbox_texture_assets.h"
@@ -154,6 +157,66 @@ public:
             std::string_view) override {
         return std::nullopt;
     }
+};
+
+class DescriptorRelativeMaterialRepository final
+        : public MaterialAssetRepository {
+public:
+    static constexpr const char *MaterialPath =
+            R"(Vehicles\Media\Material\StadiumCarSkin.Material.Gbx)";
+    static constexpr const char *TexturePath =
+            R"(Vehicles\Media\Texture\StadiumCarSkin.Dds)";
+
+    DescriptorRelativeMaterialRepository()
+            : textureSource_(std::make_shared<TestTextureSource>(
+                      "descriptor-relative-vehicle-material",
+                      TexturePath,
+                      std::vector<std::byte>{
+                              std::byte{0x44},
+                              std::byte{0x44},
+                              std::byte{0x53},
+                              std::byte{0x20}})) {}
+
+    std::optional<ResolvedMaterialDefinition> ResolveMaterial(
+            std::string_view) override {
+        return std::nullopt;
+    }
+
+    std::optional<ResolvedMaterialDefinition> ResolveMaterialPath(
+            std::string_view plainPath) override {
+        ++pathResolutionCount_;
+        lastResolvedPath_ = plainPath;
+        if (plainPath != MaterialPath) {
+            return std::nullopt;
+        }
+
+        ResolvedMaterialDefinition result;
+        result.material.asset = MaterialAssetHandle::FromRepositoryIndex(0u);
+        result.material.render.SetMaterialPaths(MaterialPath, MaterialPath);
+        MaterialRenderBitmapDefinition bitmap;
+        bitmap.samplerName = "Diffuse";
+        bitmap.imagePlainPath = TexturePath;
+        bitmap.imageSelectedPath = TexturePath;
+        bitmap.imageEncodedByteCount = 4u;
+        bitmap.imageSource = textureSource_;
+        if (!result.material.render.AppendBitmap(std::move(bitmap))) {
+            return std::nullopt;
+        }
+        return result;
+    }
+
+    std::uint32_t PathResolutionCount() const {
+        return pathResolutionCount_;
+    }
+
+    const std::string &LastResolvedPath() const {
+        return lastResolvedPath_;
+    }
+
+private:
+    std::shared_ptr<TestTextureSource> textureSource_;
+    std::uint32_t pathResolutionCount_ = 0u;
+    std::string lastResolvedPath_;
 };
 
 void AppendFloat(std::vector<std::uint8_t> *bytes, float value) {
@@ -443,6 +506,81 @@ bool TestRenderMaterialPreservesSemanticPaths() {
     return okay;
 }
 
+bool TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot() {
+    constexpr const char *ExternalMaterial =
+            R"(Material\StadiumCarSkin.Material.Gbx)";
+    constexpr const char *VehicleDescriptor =
+            R"(Vehicles\Media\Solid\StadiumCar.Solid.Gbx)";
+
+    CGameCtnReplayStaticSolidArchiveNodeGraph nodes;
+    const ArchiveNodeReference materialNode =
+            ArchiveNodeReference::FromIndex(0u);
+    bool okay = Check(
+            nodes.EnsureNodeCapacity(materialNode.Index()) &&
+                    nodes.MarkExternalNode(
+                            materialNode,
+                            1u,
+                            ArchiveNodeReference::InvalidIndex,
+                            ExternalMaterial),
+            "vehicle material test node could not be created");
+
+    DescriptorRelativeMaterialRepository repository;
+    StaticSolidArchiveLoadSession archive;
+    archive.InstallMaterialAssets(repository);
+    okay &= Check(
+            StaticSolidMaterialAssetLinker::ResolveAndAppend(
+                    &nodes,
+                    nullptr,
+                    &archive,
+                    StaticSolidArchiveId::FromIndex(0u),
+                    materialNode.Index(),
+                    VehicleDescriptor),
+            "vehicle material did not resolve relative to descriptor Media root");
+    okay &= Check(
+            repository.PathResolutionCount() == 1u &&
+                    repository.LastResolvedPath() ==
+                            DescriptorRelativeMaterialRepository::MaterialPath,
+            "vehicle material resolved through the wrong semantic path");
+
+    const auto *node = nodes.FindNode(materialNode);
+    okay &= Check(
+            node != nullptr && node->ClassId() == TMNF_CLASS_CPlugMaterial,
+            "resolved vehicle material node was not linked as CPlugMaterial");
+
+    bool sawMaterial = false;
+    bool loadedTexture = false;
+    archive.ArchiveGraph().SurfaceGraph().ForEachMaterialDefinition(
+            [&](const CGameCtnReplayStaticSolidArchiveMaterialDefinition
+                        &definition) {
+                const MaterialRenderDefinition &render = definition.Render();
+                sawMaterial =
+                        render.MaterialPlainPath() ==
+                                DescriptorRelativeMaterialRepository::
+                                        MaterialPath &&
+                        render.Bitmaps().size() == 1u;
+                if (!sawMaterial) {
+                    return 1;
+                }
+                const MaterialRenderBitmapDefinition &bitmap =
+                        render.Bitmaps().front();
+                if (!bitmap.imageSource) {
+                    return 1;
+                }
+                const MaterialTextureAssetSourceResult texture =
+                        bitmap.imageSource->ReadEncodedBytes(
+                                bitmap.imageSelectedPath);
+                loadedTexture = texture && texture.Value().size() == 4u;
+                return 1;
+            });
+    okay &= Check(
+            archive.ArchiveGraph()
+                            .SurfaceGraph()
+                            .MaterialDefinitionCount() == 1u &&
+                    sawMaterial && loadedTexture,
+            "descriptor-relative vehicle material lost its texture asset");
+    return okay;
+}
+
 bool TestLazyTextureAssetResolver() {
     using forevervalidator::experimental::
             PhysicsSandboxTextureAssetEncoding;
@@ -667,6 +805,7 @@ int main() {
     okay &= TestProvenanceAndImmutableScene();
     okay &= TestReusableLocalRenderSceneBuilder();
     okay &= TestRenderMaterialPreservesSemanticPaths();
+    okay &= TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot();
     okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();
