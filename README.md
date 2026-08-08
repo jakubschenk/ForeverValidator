@@ -153,15 +153,18 @@ docker build -t forevervalidator .
 
 The image's `ENTRYPOINT` is the `forevervalidator` binary, so any arguments
 given to `docker run` are the same command-line
-arguments documented above. Mount the `Packs` directory and your replay(s)
-into the container, then reference the in-container mount paths:
+arguments documented above. Mount the installation's `Packs` and sibling
+`GameData` directories plus your replay(s), then reference the in-container
+mount paths. `GameData` supplies loose authored assets such as material
+textures; validation itself continues to use `--pak-dir`:
 
 ```sh
 docker run --rm \
-  -v "/path/to/TmUnitedForever/Packs:/packs:ro" \
+  -v "/path/to/TmUnitedForever/Packs:/game/Packs:ro" \
+  -v "/path/to/TmUnitedForever/GameData:/game/GameData:ro" \
   -v "/path/to/replays:/replays:ro" \
   forevervalidator \
-  --pak-dir /packs \
+  --pak-dir /game/Packs \
   "/replays/run.Replay.Gbx"
 ```
 
@@ -171,11 +174,12 @@ an output directory and use `--out-dir` (and optionally `--backend` /
 
 ```sh
 docker run --rm \
-  -v "/path/to/TmUnitedForever/Packs:/packs:ro" \
+  -v "/path/to/TmUnitedForever/Packs:/game/Packs:ro" \
+  -v "/path/to/TmUnitedForever/GameData:/game/GameData:ro" \
   -v "/path/to/replays:/replays:ro" \
   -v "/path/to/results:/results" \
   forevervalidator \
-  --pak-dir /packs \
+  --pak-dir /game/Packs \
   --out-dir /results \
   --backend batched \
   "/replays"

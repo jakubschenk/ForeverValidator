@@ -85,8 +85,21 @@ Result<InstalledPackRoot> ResolveInstalledPackRoot(
                     packDirectory,
                     "installed pack directory could not be resolved safely"));
         }
+        std::string gameDataPath;
+        const std::filesystem::path gameDataCandidate =
+                canonicalRoot.parent_path() / "GameData";
+        error.clear();
+        if (std::filesystem::is_directory(gameDataCandidate, error) &&
+            !error) {
+            const std::filesystem::path canonicalGameData =
+                    std::filesystem::canonical(gameDataCandidate, error);
+            if (!error) {
+                gameDataPath = canonicalGameData.string();
+            }
+        }
         return Result<InstalledPackRoot>::Success(
-                InstalledPackRoot{canonicalRoot.string()});
+                InstalledPackRoot{
+                        canonicalRoot.string(), std::move(gameDataPath)});
     } catch (const std::bad_alloc &) {
         return Result<InstalledPackRoot>::Failure(AssetReadError(
                 ValidationErrorCode::AllocationFailed,
@@ -114,7 +127,7 @@ Result<AssetBytes> ReadInstalledPackAsset(
                     "asset identifier is not a portable relative identifier"));
         }
 
-        const std::filesystem::path canonicalRoot(root.canonicalPath);
+        std::filesystem::path canonicalRoot(root.canonicalPath);
         const std::filesystem::path relative =
                 std::filesystem::u8path(request.logicalIdentifier);
         if (relative.empty() || relative.is_absolute() ||
@@ -126,7 +139,7 @@ Result<AssetBytes> ReadInstalledPackAsset(
                     "asset identifier is not relative"));
         }
 
-        const std::filesystem::path candidate =
+        std::filesystem::path candidate =
                 (canonicalRoot / relative).lexically_normal();
         if (!IsPathWithin(canonicalRoot, candidate)) {
             return Result<AssetBytes>::Failure(AssetReadError(
@@ -137,7 +150,7 @@ Result<AssetBytes> ReadInstalledPackAsset(
         }
 
         std::error_code error;
-        const std::filesystem::path resolvedCandidate =
+        std::filesystem::path resolvedCandidate =
                 std::filesystem::weakly_canonical(candidate, error);
         if (error || !IsPathWithin(canonicalRoot, resolvedCandidate)) {
             return Result<AssetBytes>::Failure(AssetReadError(
@@ -147,13 +160,50 @@ Result<AssetBytes> ReadInstalledPackAsset(
                     "asset path containment could not be established"));
         }
 
-        const bool exists = std::filesystem::exists(candidate, error);
+        bool exists = std::filesystem::exists(candidate, error);
         if (error) {
             return Result<AssetBytes>::Failure(AssetReadError(
                     ValidationErrorCode::AssetLoadingFailed,
                     ValidationFailureReason::AssetProviderFailed,
                     request.logicalIdentifier,
                     "installed-pack asset status could not be read"));
+        }
+        // Keep the historical Packs-root behavior and use the sibling
+        // GameData tree only as a fallback for nested authored asset paths.
+        // This lets packed wrappers resolve loose DDS/TGA files without
+        // changing precedence for existing callers or pack assets.
+        if (!exists &&
+            request.logicalIdentifier.find('/') != std::string::npos &&
+            !root.canonicalGameDataPath.empty()) {
+            canonicalRoot = root.canonicalGameDataPath;
+            candidate = (canonicalRoot / relative).lexically_normal();
+            if (!IsPathWithin(canonicalRoot, candidate)) {
+                return Result<AssetBytes>::Failure(AssetReadError(
+                        ValidationErrorCode::AssetLoadingFailed,
+                        ValidationFailureReason::AssetPathEscapesRoot,
+                        request.logicalIdentifier,
+                        "asset path escapes the installed GameData directory"));
+            }
+            error.clear();
+            resolvedCandidate =
+                    std::filesystem::weakly_canonical(candidate, error);
+            if (error || !IsPathWithin(canonicalRoot, resolvedCandidate)) {
+                return Result<AssetBytes>::Failure(AssetReadError(
+                        ValidationErrorCode::AssetLoadingFailed,
+                        ValidationFailureReason::AssetPathEscapesRoot,
+                        request.logicalIdentifier,
+                        "asset path containment could not be established in "
+                        "the installed GameData directory"));
+            }
+            error.clear();
+            exists = std::filesystem::exists(candidate, error);
+            if (error) {
+                return Result<AssetBytes>::Failure(AssetReadError(
+                        ValidationErrorCode::AssetLoadingFailed,
+                        ValidationFailureReason::AssetProviderFailed,
+                        request.logicalIdentifier,
+                        "GameData asset status could not be read"));
+            }
         }
         if (!exists) {
             return Result<AssetBytes>::Failure(AssetReadError(

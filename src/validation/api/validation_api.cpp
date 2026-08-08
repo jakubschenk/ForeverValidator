@@ -860,7 +860,8 @@ Result<CachedPackAssets *> PreparePackAssets(
                 pack.bytes.data(),
                 pack.bytes.size(),
                 *context.packKeys,
-                pack.packName.c_str());
+                pack.packName.c_str(),
+                context.provider);
         if (!cached->repository) {
             ValidationError error = MakeError(
                     ValidationErrorCategory::Asset,
