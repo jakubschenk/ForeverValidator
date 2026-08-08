@@ -44,7 +44,11 @@ std::optional<ResolvedMaterialDefinition> ResolveRelativeToDescriptor(
         }
         std::string relative = path.HasPlainPath()
                 ? std::string(path.PlainPath())
-                : std::string("Material\\") + identifier;
+                : identifier;
+        if (!path.HasPlainPath() &&
+            relative.rfind("Material\\", 0u) != 0u) {
+            relative.insert(0u, "Material\\");
+        }
         if (relative.rfind("Material\\", 0u) != 0u) {
             return std::nullopt;
         }
