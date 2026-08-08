@@ -1,14 +1,15 @@
 #include "simulation/backends/cuda/cuda_scene_storage.h"
 #include "simulation/backends/cuda/cuda_search_executor.h"
+#include "simulation/backends/cuda/cuda_session_specialization.h"
 #include "simulation/backends/cuda/cuda_static_configuration.h"
 
 #include <cuda_runtime_api.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -110,7 +111,180 @@ bool NoPrefixStorage(const CudaSearchBatchExecution &execution) {
 CudaSearchExecutorConfiguration Configuration(
         const void *deviceScene,
         const void *deviceConfiguration,
-        std::uint32_t capacity = 16u) {
+        std::uint32_t capacity = 16u);
+
+std::unique_ptr<CudaSearchExecutor> Create(
+        const CudaSearchExecutorConfiguration &configuration,
+        const char *name);
+
+bool Successful(
+        const CudaSearchBatchExecution &execution,
+        const char *name);
+
+bool SameProductionStorageTuple(
+        const CudaSearchBatchExecution &left,
+        const CudaSearchBatchExecution &right) {
+    return left.mutationDeviceBytes == right.mutationDeviceBytes &&
+            left.candidateInputDeviceBytes ==
+                    right.candidateInputDeviceBytes &&
+            left.mutationScratchDeviceBytes ==
+                    right.mutationScratchDeviceBytes &&
+            left.baselinePrefixDeviceBytes ==
+                    right.baselinePrefixDeviceBytes &&
+            left.candidatePrefixDeviceBytes ==
+                    right.candidatePrefixDeviceBytes &&
+            left.candidateDeduplicationDeviceBytes ==
+                    right.candidateDeduplicationDeviceBytes &&
+            left.winnerSelectionDeviceBytes ==
+                    right.winnerSelectionDeviceBytes &&
+            left.hostToDeviceBytes == right.hostToDeviceBytes;
+}
+
+bool ValidHotPathAccounting(
+        const CudaSearchBatchExecution &execution,
+        std::uint32_t maximumTicks) {
+    const CudaSearchHotPathMetrics &metrics = execution.hotPath;
+    const std::uint64_t forcePaths =
+            metrics.groundForcePassCount +
+            metrics.airForcePassCount +
+            metrics.physicsCallbackDisabledForcePassCount +
+            metrics.zeroDynamicsForcePassCount;
+    const bool firstTickBoundsValid =
+            metrics.physicallySimulatedCandidateCount == 0u
+            ? metrics.firstSimulationTickSum == 0u &&
+                      metrics.firstSimulationTickMinimum == 0u &&
+                      metrics.firstSimulationTickMaximum == 0u
+            : metrics.firstSimulationTickMinimum <=
+                              metrics.firstSimulationTickMaximum &&
+                      metrics.firstSimulationTickMaximum < maximumTicks &&
+                      metrics.firstSimulationTickSum >=
+                              metrics.firstSimulationTickMinimum *
+                                      metrics.
+                                              physicallySimulatedCandidateCount &&
+                      metrics.firstSimulationTickSum <=
+                              metrics.firstSimulationTickMaximum *
+                                      metrics.
+                                              physicallySimulatedCandidateCount;
+    return metrics.collected && metrics.complete &&
+            metrics.forcedRuntimeGenericKernel &&
+            metrics.physicallySimulatedCandidateCount <=
+                    execution.evaluatedCandidateCount &&
+            metrics.executedTickCount <=
+                    metrics.physicallySimulatedCandidateCount *
+                            maximumTicks &&
+            metrics.completedTickCount == metrics.executedTickCount &&
+            metrics.physicsSubstepCount == metrics.collisionDetectCount &&
+            metrics.physicsSubstepCount == metrics.responseSortCallCount &&
+            metrics.surfaceCacheEligibleCount ==
+                    metrics.surfaceCacheReuseCount +
+                            metrics.surfaceCacheRefreshCount &&
+            metrics.surfaceCacheRefreshFailureCount <=
+                    metrics.surfaceCacheRefreshCount &&
+            metrics.triangleHitCount <= metrics.triangleTestCount &&
+            metrics.maximumResponseSortItemCount <=
+                    metrics.responseSortItemCount &&
+            forcePaths == metrics.physicsSubstepCount &&
+            metrics.waterForcePassCount <=
+                    metrics.groundForcePassCount +
+                            metrics.airForcePassCount &&
+            firstTickBoundsValid;
+}
+
+bool CheckHotPathMetrics(
+        const void *deviceScene,
+        const void *deviceConfiguration) {
+    CudaSearchExecutorConfiguration referenceConfiguration =
+            Configuration(deviceScene, deviceConfiguration);
+    referenceConfiguration.deduplicationReplicaLimitForTesting = 1u;
+    CudaSearchExecutorConfiguration profilingConfiguration =
+            referenceConfiguration;
+    profilingConfiguration.collectHotPathMetrics = true;
+
+    auto reference = Create(
+            referenceConfiguration, "hot-path reference executor");
+    auto profiling = Create(
+            profilingConfiguration, "hot-path profiling executor");
+    if (!reference || !profiling) return false;
+
+    const CudaSearchBatchExecution referenceBaseline =
+            reference->EvaluateBaseline();
+    const CudaSearchBatchExecution profilingBaseline =
+            profiling->EvaluateBaseline();
+    if (!Successful(referenceBaseline, "hot-path reference baseline") ||
+        !Successful(profilingBaseline, "hot-path profiling baseline") ||
+        !SameSemantics(referenceBaseline, profilingBaseline) ||
+        referenceBaseline.hotPath.collected ||
+        referenceBaseline.hotPath.complete ||
+        referenceBaseline.hotPath.forcedRuntimeGenericKernel ||
+        !ValidHotPathAccounting(profilingBaseline, 6u) ||
+        profilingBaseline.hotPath.physicallySimulatedCandidateCount != 1u ||
+        profilingBaseline.residentDeviceBytes <=
+                referenceBaseline.residentDeviceBytes ||
+        profilingBaseline.deviceToHostBytes <=
+                referenceBaseline.deviceToHostBytes ||
+        !SameProductionStorageTuple(
+                referenceBaseline, profilingBaseline)) {
+        std::cerr << "hot-path baseline parity/accounting failed\n";
+        return false;
+    }
+
+    const CudaSearchBatchExecution referenceBatch =
+            reference->RunBatch(0u, 16u, false);
+    const CudaSearchBatchExecution profilingBatch =
+            profiling->RunBatch(0u, 16u, false);
+    if (!Successful(referenceBatch, "hot-path reference batch") ||
+        !Successful(profilingBatch, "hot-path profiling batch") ||
+        !SameSemantics(referenceBatch, profilingBatch) ||
+        referenceBatch.hotPath.collected ||
+        referenceBatch.hotPath.complete ||
+        referenceBatch.hotPath.forcedRuntimeGenericKernel ||
+        !ValidHotPathAccounting(profilingBatch, 6u) ||
+        profilingBatch.hotPath.physicallySimulatedCandidateCount !=
+                profilingBatch.simulatedCandidateCount ||
+        profilingBatch.simulatedCandidateCount != 1u ||
+        profilingBatch.deduplicatedCandidateCount != 15u ||
+        profilingBatch.residentDeviceBytes <=
+                referenceBatch.residentDeviceBytes ||
+        profilingBatch.deviceToHostBytes <=
+                referenceBatch.deviceToHostBytes ||
+        !SameProductionStorageTuple(referenceBatch, profilingBatch)) {
+        std::cerr << "hot-path batch parity/accounting failed\n";
+        return false;
+    }
+
+    const CudaSearchBatchExecution referencePartial =
+            reference->RunBatch(16u, 5u, false);
+    const CudaSearchBatchExecution profilingPartial =
+            profiling->RunBatch(16u, 5u, false);
+    if (!Successful(referencePartial, "hot-path reference partial") ||
+        !Successful(profilingPartial, "hot-path profiling partial") ||
+        !SameSemantics(referencePartial, profilingPartial) ||
+        !ValidHotPathAccounting(profilingPartial, 6u) ||
+        profilingPartial.hotPath.physicallySimulatedCandidateCount != 1u ||
+        profilingPartial.simulatedCandidateCount != 1u ||
+        profilingPartial.deduplicatedCandidateCount != 4u ||
+        !SameProductionStorageTuple(
+                referencePartial, profilingPartial)) {
+        std::cerr << "partial hot-path records retained stale slots\n";
+        return false;
+    }
+
+    const CudaSearchBatchExecution cancelled =
+            profiling->RunBatch(21u, 16u, true);
+    if (cancelled.status != CudaSearchStatus::Cancelled ||
+        !cancelled.hotPath.collected ||
+        cancelled.hotPath.complete ||
+        !cancelled.hotPath.forcedRuntimeGenericKernel) {
+        std::cerr << "cancelled hot-path metrics were not finalized\n";
+        return false;
+    }
+    return true;
+}
+
+CudaSearchExecutorConfiguration Configuration(
+        const void *deviceScene,
+        const void *deviceConfiguration,
+        std::uint32_t capacity) {
     CudaSearchExecutorConfiguration result;
     result.deviceScene = deviceScene;
     result.deviceStaticConfiguration = deviceConfiguration;
@@ -300,7 +474,7 @@ bool CheckDisabledEligibility(
     return true;
 }
 
-std::optional<CudaSearchBatchExecution> ForcedExecution(
+std::unique_ptr<CudaSearchBatchExecution> ForcedExecution(
         const void *deviceScene,
         const void *deviceConfiguration,
         std::uint32_t minimumBlocks) {
@@ -316,46 +490,91 @@ std::optional<CudaSearchBatchExecution> ForcedExecution(
     fullConfiguration.sortCandidatesByLocality = false;
     fullConfiguration.deduplicateLowEntropyCandidateInputs = false;
     fullConfiguration.deduplicationReplicaLimitForTesting = 0u;
+    CudaSearchExecutorConfiguration profilingConfiguration =
+            optimizedConfiguration;
+    profilingConfiguration.collectHotPathMetrics = true;
 
     auto optimized = Create(
             optimizedConfiguration, "forced optimized executor");
     auto full = Create(fullConfiguration, "forced full executor");
-    if (!optimized || !full) return std::nullopt;
-    const CudaSearchBatchExecution optimizedBaseline =
-            optimized->EvaluateBaseline();
-    const CudaSearchBatchExecution fullBaseline =
-            full->EvaluateBaseline();
-    CudaSearchBatchExecution optimizedBatch =
-            optimized->RunBatch(100u, 5u, false);
-    const CudaSearchBatchExecution fullBatch =
-            full->RunBatch(100u, 5u, false);
-    if (!Successful(optimizedBaseline, "forced optimized baseline") ||
-        !Successful(fullBaseline, "forced full baseline") ||
-        !Successful(optimizedBatch, "forced optimized batch") ||
-        !Successful(fullBatch, "forced full batch") ||
-        !SameSemantics(optimizedBaseline, fullBaseline) ||
-        !SameSemantics(optimizedBatch, fullBatch) ||
-        optimizedBaseline.
-                        simulationSelectedMinimumBlocksPerMultiprocessor !=
-                minimumBlocks ||
-        fullBaseline.simulationSelectedMinimumBlocksPerMultiprocessor !=
-                minimumBlocks ||
-        optimizedBatch.
-                        simulationSelectedMinimumBlocksPerMultiprocessor !=
-                minimumBlocks ||
-        fullBatch.simulationSelectedMinimumBlocksPerMultiprocessor !=
-                minimumBlocks ||
-        !optimizedBatch.baselinePrefixReuseActive ||
-        !optimizedBatch.candidateDeduplicationActive ||
-        optimizedBatch.simulatedCandidateCount != 1u ||
-        optimizedBatch.deduplicatedCandidateCount != 4u ||
-        !NoPrefixStorage(fullBatch) ||
-        fullBatch.simulatedCandidateCount != 5u) {
-        std::cerr << "forced " << minimumBlocks
-                  << "-block optimized/full matrix failed\n";
-        return std::nullopt;
+    auto profiling = Create(
+            profilingConfiguration, "forced profiling executor");
+    if (!optimized || !full || !profiling) return nullptr;
+    {
+        const std::unique_ptr<CudaSearchBatchExecution>
+                optimizedBaseline(
+                        new CudaSearchBatchExecution(
+                                optimized->EvaluateBaseline()));
+        const std::unique_ptr<CudaSearchBatchExecution> fullBaseline(
+                new CudaSearchBatchExecution(
+                        full->EvaluateBaseline()));
+        const std::unique_ptr<CudaSearchBatchExecution>
+                profilingBaseline(
+                        new CudaSearchBatchExecution(
+                                profiling->EvaluateBaseline()));
+        if (!Successful(
+                    *optimizedBaseline, "forced optimized baseline") ||
+            !Successful(*fullBaseline, "forced full baseline") ||
+            !Successful(
+                    *profilingBaseline, "forced profiling baseline") ||
+            !SameSemantics(*optimizedBaseline, *fullBaseline) ||
+            !SameSemantics(*optimizedBaseline, *profilingBaseline) ||
+            optimizedBaseline->hotPath.collected ||
+            !ValidHotPathAccounting(*profilingBaseline, 6u) ||
+            optimizedBaseline->
+                            simulationSelectedMinimumBlocksPerMultiprocessor !=
+                    minimumBlocks ||
+            fullBaseline->
+                            simulationSelectedMinimumBlocksPerMultiprocessor !=
+                    minimumBlocks ||
+            profilingBaseline->
+                            simulationSelectedMinimumBlocksPerMultiprocessor !=
+                    minimumBlocks ||
+            !SameProductionStorageTuple(
+                    *optimizedBaseline, *profilingBaseline)) {
+            std::cerr << "forced " << minimumBlocks
+                      << "-block baseline profiling matrix failed\n";
+            return nullptr;
+        }
     }
-    return optimizedBatch;
+
+    std::unique_ptr<CudaSearchBatchExecution> optimizedBatch(
+            new CudaSearchBatchExecution(
+                    optimized->RunBatch(100u, 5u, false)));
+    const std::unique_ptr<CudaSearchBatchExecution> fullBatch(
+            new CudaSearchBatchExecution(
+                    full->RunBatch(100u, 5u, false)));
+    std::unique_ptr<CudaSearchBatchExecution> profilingBatch(
+            new CudaSearchBatchExecution(
+                    profiling->RunBatch(100u, 5u, false)));
+    if (!Successful(*optimizedBatch, "forced optimized batch") ||
+        !Successful(*fullBatch, "forced full batch") ||
+        !Successful(*profilingBatch, "forced profiling batch") ||
+        !SameSemantics(*optimizedBatch, *fullBatch) ||
+        !SameSemantics(*optimizedBatch, *profilingBatch) ||
+        optimizedBatch->hotPath.collected ||
+        !ValidHotPathAccounting(*profilingBatch, 6u) ||
+        optimizedBatch->
+                        simulationSelectedMinimumBlocksPerMultiprocessor !=
+                minimumBlocks ||
+        fullBatch->simulationSelectedMinimumBlocksPerMultiprocessor !=
+                minimumBlocks ||
+        profilingBatch->
+                        simulationSelectedMinimumBlocksPerMultiprocessor !=
+                minimumBlocks ||
+        !optimizedBatch->baselinePrefixReuseActive ||
+        !optimizedBatch->candidateDeduplicationActive ||
+        optimizedBatch->simulatedCandidateCount != 1u ||
+        optimizedBatch->deduplicatedCandidateCount != 4u ||
+        profilingBatch->hotPath.physicallySimulatedCandidateCount != 1u ||
+        !SameProductionStorageTuple(*optimizedBatch, *profilingBatch) ||
+        !NoPrefixStorage(*fullBatch) ||
+        fullBatch->simulatedCandidateCount != 5u) {
+        std::cerr << "forced " << minimumBlocks
+                  << "-block batch profiling matrix failed\n";
+        return nullptr;
+    }
+    return profilingBatch;
 }
 
 bool CheckForcedVariants(
@@ -370,6 +589,184 @@ bool CheckForcedVariants(
     return throughput && tail && denseTail &&
             SameSemantics(*throughput, *tail) &&
             SameSemantics(*throughput, *denseTail);
+}
+
+bool CheckSessionSpecializationLookupAndProfilingBypass(
+        const CudaPackedSceneHeader &scene,
+        const void *deviceScene) {
+    struct SessionConfigurationFixture {
+        CudaPackedStaticConfigurationHeader header;
+        CudaTuningCurveKey curveKey;
+        CudaVehicleCollisionShape collisionShape;
+    } fixture;
+    fixture.header.totalSize = sizeof(fixture);
+    fixture.header.curveKeys.offset =
+            offsetof(SessionConfigurationFixture, curveKey);
+    fixture.header.curveKeys.count = 1u;
+    fixture.header.curveKeys.stride = sizeof(fixture.curveKey);
+    fixture.header.collisionShapes.offset =
+            offsetof(SessionConfigurationFixture, collisionShape);
+    fixture.header.collisionShapes.count = 1u;
+    fixture.header.collisionShapes.stride =
+            sizeof(fixture.collisionShape);
+    fixture.collisionShape.localPose.SetIdentity();
+    fixture.collisionShape.bodyPose.SetIdentity();
+    DeviceValue<SessionConfigurationFixture> deviceConfiguration(
+            fixture);
+    if (deviceConfiguration.Get() == nullptr) {
+        std::cerr << "session configuration fixture upload failed\n";
+        return false;
+    }
+
+    auto module =
+            std::make_shared<cuda::specialization::SessionModule>();
+    std::string diagnostic;
+    if (!module->Build(
+                fixture.header,
+                static_cast<std::uint64_t>(
+                        reinterpret_cast<std::uintptr_t>(
+                                deviceConfiguration.Get())),
+                scene,
+                static_cast<std::uint64_t>(
+                        reinterpret_cast<std::uintptr_t>(deviceScene)),
+                &diagnostic) ||
+        !module->Ready() ||
+        module->Kernel(16u) == nullptr ||
+        module->Kernel(12u) == nullptr ||
+        module->Kernel(8u) == nullptr) {
+        std::cerr << "session specialization lookup failed: "
+                  << diagnostic << '\n';
+        return false;
+    }
+
+    CudaSearchExecutorConfiguration specializedConfiguration =
+            Configuration(
+                    deviceScene, deviceConfiguration.Get(), 8u);
+    specializedConfiguration.deduplicationReplicaLimitForTesting = 1u;
+    specializedConfiguration.
+            simulationMinimumBlocksPerMultiprocessorForTesting = 16u;
+    specializedConfiguration.sessionSpecialization = module;
+    CudaSearchExecutorConfiguration profilingConfiguration =
+            specializedConfiguration;
+    profilingConfiguration.collectHotPathMetrics = true;
+
+    auto specialized = Create(
+            specializedConfiguration,
+            "supplied session-specialized executor");
+    auto profiling = Create(
+            profilingConfiguration,
+            "session-bypass profiling executor");
+    if (!specialized || !profiling) return false;
+    const CudaSearchBatchExecution specializedBaseline =
+            specialized->EvaluateBaseline();
+    const CudaSearchBatchExecution profilingBaseline =
+            profiling->EvaluateBaseline();
+    const CudaSearchBatchExecution specializedBatch =
+            specialized->RunBatch(200u, 5u, false);
+    const CudaSearchBatchExecution profilingBatch =
+            profiling->RunBatch(200u, 5u, false);
+    const cuda::specialization::KernelMetrics &moduleMetrics =
+            module->Metrics(16u);
+    if (!Successful(
+                specializedBaseline,
+                "supplied session-specialized baseline") ||
+        !Successful(
+                profilingBaseline,
+                "session-bypass profiling baseline") ||
+        !Successful(
+                specializedBatch,
+                "supplied session-specialized batch") ||
+        !Successful(
+                profilingBatch,
+                "session-bypass profiling batch") ||
+        !SameSemantics(specializedBaseline, profilingBaseline) ||
+        !SameSemantics(specializedBatch, profilingBatch) ||
+        specializedBaseline.hotPath.collected ||
+        specializedBatch.hotPath.collected ||
+        specializedBaseline.simulationRegistersPerThread !=
+                moduleMetrics.registersPerThread ||
+        specializedBaseline.simulationLocalBytesPerThread !=
+                moduleMetrics.localBytesPerThread ||
+        specializedBaseline.
+                        simulationActiveBlocksPerMultiprocessor !=
+                moduleMetrics.activeBlocksPerMultiprocessor ||
+        !ValidHotPathAccounting(profilingBaseline, 6u) ||
+        !ValidHotPathAccounting(profilingBatch, 6u) ||
+        !profilingBaseline.hotPath.forcedRuntimeGenericKernel ||
+        !profilingBatch.hotPath.forcedRuntimeGenericKernel) {
+        std::cerr << "profiling did not bypass the supplied session "
+                     "module through generic runtime AOT\n";
+        return false;
+    }
+    return true;
+}
+
+bool CheckPostLaunchCancellationFinalization(
+        const void *deviceScene,
+        const void *deviceConfiguration) {
+    constexpr std::uint32_t TimelineTicks = 4096u;
+    constexpr std::uint32_t CandidateCount = 256u;
+    CudaSearchExecutorConfiguration configuration =
+            Configuration(
+                    deviceScene,
+                    deviceConfiguration,
+                    CandidateCount);
+    configuration.collectHotPathMetrics = true;
+    configuration.reuseBaselinePrefixes = false;
+    configuration.sortCandidatesByLocality = false;
+    configuration.deduplicateLowEntropyCandidateInputs = false;
+    configuration.deduplicationReplicaLimitForTesting = 0u;
+    configuration.evaluationEndTimeMs =
+            static_cast<std::int64_t>(TimelineTicks) * 10;
+    configuration.baselineTicks.clear();
+    configuration.baselineTicks.reserve(TimelineTicks);
+    for (std::uint32_t tickIndex = 1u;
+         tickIndex <= TimelineTicks;
+         ++tickIndex) {
+        CudaControlTick tick;
+        tick.periodMs = 10u;
+        tick.timeMs = tickIndex * 10u;
+        tick.actionFlags =
+                CudaControlActionSuppressVehicleForceCallbacks;
+        configuration.baselineTicks.push_back(tick);
+    }
+
+    auto executor = Create(
+            configuration, "post-launch cancellation executor");
+    if (!executor) return false;
+    const CudaSearchBatchExecution baseline =
+            executor->EvaluateBaseline();
+    if (!Successful(baseline, "post-launch cancellation baseline") ||
+        !ValidHotPathAccounting(baseline, TimelineTicks)) {
+        return false;
+    }
+
+    std::uint32_t cancellationProbeCount = 0u;
+    const CudaSearchBatchExecution cancelled = executor->RunBatch(
+            300u,
+            CandidateCount,
+            [&cancellationProbeCount] {
+                ++cancellationProbeCount;
+                return cancellationProbeCount >= 2u;
+            });
+    if (cancellationProbeCount < 2u ||
+        cancelled.status != CudaSearchStatus::Cancelled ||
+        !cancelled.hotPath.collected ||
+        cancelled.hotPath.complete ||
+        !cancelled.hotPath.forcedRuntimeGenericKernel ||
+        cancelled.hotPath.physicallySimulatedCandidateCount == 0u ||
+        cancelled.hotPath.physicallySimulatedCandidateCount >
+                CandidateCount ||
+        cancelled.hotPath.completedTickCount !=
+                cancelled.hotPath.executedTickCount ||
+        cancelled.hotPath.executedTickCount >
+                cancelled.hotPath.physicallySimulatedCandidateCount *
+                        TimelineTicks) {
+        std::cerr << "post-launch cancellation metrics were not "
+                     "finalized deterministically\n";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -397,12 +794,17 @@ int main() {
     }
 
     if (!CheckPrefixAndDeduplicationParity(
-                deviceScene.Get(), deviceConfiguration.Get()) ||
-        !CheckDisabledEligibility(
-                deviceScene.Get(), deviceConfiguration.Get()) ||
-        !CheckForcedVariants(
-                deviceScene.Get(), deviceConfiguration.Get())) {
-        return 1;
-    }
+                deviceScene.Get(), deviceConfiguration.Get())) return 1;
+    if (!CheckHotPathMetrics(
+                deviceScene.Get(), deviceConfiguration.Get())) return 1;
+    if (!CheckDisabledEligibility(
+                deviceScene.Get(), deviceConfiguration.Get())) return 1;
+    if (!CheckForcedVariants(
+                deviceScene.Get(), deviceConfiguration.Get())) return 1;
+    if (!CheckSessionSpecializationLookupAndProfilingBypass(
+                scene,
+                deviceScene.Get())) return 1;
+    if (!CheckPostLaunchCancellationFinalization(
+                deviceScene.Get(), deviceConfiguration.Get())) return 1;
     return 0;
 }
