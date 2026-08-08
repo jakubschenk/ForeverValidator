@@ -275,6 +275,7 @@ public:
             CGameCtnReplayStaticSolidDecodedPayload *decodedOut,
             CGameCtnReplayStaticSolidArchiveDecodeStats *statsOut);
     int InstallPackSource(const CPlugFilePack &pack);
+    void InstallMaterialAssets(MaterialAssetRepository &assets);
     CGameCtnReplayStaticSolidArchiveGraph &MutableArchiveGraph();
     const CGameCtnReplayStaticSolidArchiveGraph &ArchiveGraph() const;
     MaterialAssetRepository *MaterialAssets() const;

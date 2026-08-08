@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "engine/rendering/plug_tree.h"
+#include "engine/scene/plug_solid.h"
 #include "format/pack/installed/plug_file_pack.h"
 #include "format/pack/installed_vehicle_asset_graph.h"
 #include "format/static_solid/static_solid_archive_assembler.h"
@@ -220,22 +221,42 @@ bool ExtractWheelDefinitions(
     return definitions.IsComplete();
 }
 
-}  // namespace
-
-std::optional<ReplayVehicleSolidDefinition>
-DefaultVehicleSolidArchive::LoadFromPack(
-        CPlugFilePack &pack) {
-    std::optional<InstalledVehicleAssetGraph> assets =
-            InstalledVehicleAssetGraph::ResolveFromPack(pack);
-    return assets.has_value()
-            ? LoadFromPack(pack, *assets)
-            : std::nullopt;
+void RootDecodedTree(CPlugTree *tree) {
+    if (tree == nullptr) {
+        return;
+    }
+    tree->SetIsRooted(1);
+    for (u32 index = 0u; index < tree->GetChildCount(); ++index) {
+        RootDecodedTree(tree->GetChild(index));
+    }
 }
 
-std::optional<ReplayVehicleSolidDefinition>
-DefaultVehicleSolidArchive::LoadFromPack(
+StaticSolidPrototype BuildVisualPrototype(
+        CPlugTree *sourceRoot,
+        const CGameCtnReplayStaticSolidArchiveSolidPhysicsDefinition
+                *physical) {
+    if (sourceRoot == nullptr) {
+        return {};
+    }
+    RootDecodedTree(sourceRoot);
+    std::unique_ptr<CPlugTree> root(
+            sourceRoot->InternalCreateSolidModelInstance());
+    if (!root) {
+        return {};
+    }
+    CMwNodRef<CPlugSolid> solid = MakeMwNod<CPlugSolid>();
+    if (physical != nullptr) {
+        physical->ApplyToSolid(solid.Get());
+    }
+    solid->SetOwnedTree(std::move(root), 0);
+    return StaticSolidPrototype(solid.Get());
+}
+
+std::optional<DefaultVehicleSolidAssets> LoadVehicleAssets(
         CPlugFilePack &pack,
-        const InstalledVehicleAssetGraph &assets) {
+        const InstalledVehicleAssetGraph &assets,
+        MaterialAssetRepository *materialAssets,
+        bool buildVisual) {
     if (!assets.IsComplete()) {
         return std::nullopt;
     }
@@ -248,6 +269,9 @@ DefaultVehicleSolidArchive::LoadFromPack(
     StaticSolidArchiveLoadSession archive;
     if (!archive.InstallPackSource(pack)) {
         return std::nullopt;
+    }
+    if (materialAssets != nullptr) {
+        archive.InstallMaterialAssets(*materialAssets);
     }
 
     CGameCtnReplayStaticSolidDecodedPayload decodedPayload;
@@ -270,16 +294,53 @@ DefaultVehicleSolidArchive::LoadFromPack(
     if (!assembler.Assemble(archive.ArchiveGraph(), archive)) {
         return std::nullopt;
     }
-    CPlugTree *collisionRoot =
-            assembler.CollisionRoot(StaticSolidArchiveId::FromIndex(0u));
+    const StaticSolidArchiveId payload =
+            StaticSolidArchiveId::FromIndex(0u);
+    CPlugTree *collisionRoot = assembler.CollisionRoot(payload);
     if (collisionRoot == nullptr) {
         return std::nullopt;
     }
 
-    ReplayVehicleSolidDefinition definitions;
-    if (!ExtractWheelDefinitions(archive, collisionRoot, definitions)) {
+    DefaultVehicleSolidAssets result;
+    if (!ExtractWheelDefinitions(
+                archive, collisionRoot, result.definition)) {
         return std::nullopt;
     }
-    return std::optional<ReplayVehicleSolidDefinition>(
-            std::move(definitions));
+    if (buildVisual) {
+        result.visualPrototype = BuildVisualPrototype(
+                collisionRoot, assembler.Physics(payload));
+    }
+    return result;
+}
+
+}  // namespace
+
+std::optional<ReplayVehicleSolidDefinition>
+DefaultVehicleSolidArchive::LoadFromPack(
+        CPlugFilePack &pack) {
+    std::optional<InstalledVehicleAssetGraph> assets =
+            InstalledVehicleAssetGraph::ResolveFromPack(pack);
+    return assets.has_value()
+            ? LoadFromPack(pack, *assets)
+            : std::nullopt;
+}
+
+std::optional<ReplayVehicleSolidDefinition>
+DefaultVehicleSolidArchive::LoadFromPack(
+        CPlugFilePack &pack,
+        const InstalledVehicleAssetGraph &assets) {
+    std::optional<DefaultVehicleSolidAssets> loaded =
+            LoadVehicleAssets(pack, assets, nullptr, false);
+    return loaded.has_value()
+            ? std::optional<ReplayVehicleSolidDefinition>(
+                      std::move(loaded->definition))
+            : std::nullopt;
+}
+
+std::optional<DefaultVehicleSolidAssets>
+DefaultVehicleSolidArchive::LoadAssetsFromPack(
+        CPlugFilePack &pack,
+        const InstalledVehicleAssetGraph &assets,
+        MaterialAssetRepository &materialAssets) {
+    return LoadVehicleAssets(pack, assets, &materialAssets, true);
 }

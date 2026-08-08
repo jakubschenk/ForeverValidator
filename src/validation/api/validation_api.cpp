@@ -50,12 +50,14 @@ struct CachedVehicleAssets {
     ::ReplayVehicleModel vehicleModel = ::ReplayVehicleModel::Unknown;
     InstalledVehicleAssetGraph assetGraph;
     ReplayVehicleSourceBundle vehicleSources;
+    experimental::PhysicsSandboxRenderSceneHandle renderScene;
 };
 
 struct PreparedAssets {
     ReplayAssetRepository *mapAssets = nullptr;
     ReplayAssetRepository *decorationAssets = nullptr;
     const ReplayVehicleSourceBundle *vehicleSources = nullptr;
+    experimental::PhysicsSandboxRenderSceneHandle vehicleRenderScene;
 };
 
 struct ValidationState {
@@ -935,8 +937,27 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
         }
         std::optional<DefaultVehiclePackData> vehicle =
                 DefaultVehiclePackArchive::LoadFromPack(pack, *assetGraph);
-        std::optional<ReplayVehicleSolidDefinition> solid =
-                DefaultVehicleSolidArchive::LoadFromPack(pack, *assetGraph);
+        std::optional<DefaultVehicleSolidAssets> solidAssets;
+        Result<CachedPackAssets *> vehiclePackAssetsResult =
+                PreparePackAssets(context, packName, identity);
+        if (vehiclePackAssetsResult) {
+            try {
+                solidAssets =
+                        DefaultVehicleSolidArchive::LoadAssetsFromPack(
+                                pack,
+                                *assetGraph,
+                                *vehiclePackAssetsResult.Value()->repository);
+            } catch (...) {
+                solidAssets.reset();
+            }
+        }
+        std::optional<ReplayVehicleSolidDefinition> solid;
+        if (solidAssets.has_value()) {
+            solid = std::move(solidAssets->definition);
+        } else {
+            solid = DefaultVehicleSolidArchive::LoadFromPack(
+                    pack, *assetGraph);
+        }
         if (!vehicle.has_value() || !solid.has_value()) {
             ValidationError error = MakeError(
                     ValidationErrorCategory::Asset,
@@ -948,6 +969,37 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
             error.relatedAsset = installed.packName + ".pak";
             return Result<CachedVehicleAssets *>::Failure(std::move(error));
         }
+        experimental::PhysicsSandboxRenderSceneHandle vehicleRenderScene;
+        if (solidAssets.has_value() &&
+            solidAssets->visualPrototype.IsValid()) {
+            try {
+                GmIso4 identityIso;
+                identityIso.SetIdentity();
+                StaticSceneModel vehicleModelScene(
+                        solidAssets->visualPrototype,
+                        identityIso,
+                        StaticScenePurpose::Generated);
+                StaticSceneProvenance provenance;
+                provenance.collection =
+                        ReplayVehicleModelName(vehicleModel);
+                provenance.descriptorPath =
+                        assetGraph->solid.selectedPath;
+                provenance.sceneObjectId = "default-vehicle";
+                provenance.authored = true;
+                vehicleModelScene.SetProvenance(std::move(provenance));
+                StaticSceneModelCollection vehicleModels;
+                if (vehicleModels.Add(std::move(vehicleModelScene))) {
+                    experimental::PhysicsSandboxRenderSceneHandle built =
+                            BuildPhysicsSandboxRenderScene(vehicleModels);
+                    if (built && !built->meshes.empty() &&
+                        !built->instances.empty()) {
+                        vehicleRenderScene = std::move(built);
+                    }
+                }
+            } catch (...) {
+                vehicleRenderScene.reset();
+            }
+        }
         auto cached = std::make_unique<CachedVehicleAssets>();
         cached->packName = installed.packName;
         cached->vehicleModel = vehicleModel;
@@ -956,6 +1008,7 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
                 std::move(*solid),
                 std::move(vehicle->tuning),
                 std::move(vehicle->vehicle)};
+        cached->renderScene = std::move(vehicleRenderScene);
         if (!cached->vehicleSources.IsComplete()) {
             ValidationError error = MakeError(
                     ValidationErrorCategory::Asset,
@@ -1006,6 +1059,7 @@ Result<PreparedAssets> PrepareAssets(
             mapResult.Value()->repository.get(),
             decorationResult.Value()->repository.get(),
             &vehicleResult.Value()->vehicleSources,
+            vehicleResult.Value()->renderScene,
     });
 }
 
@@ -1523,6 +1577,7 @@ struct PhysicsSandbox::Impl {
     std::uint64_t scenarioFingerprint = 0u;
     PhysicsSandboxSceneView scene{};
     PhysicsSandboxRenderSceneHandle renderScene;
+    PhysicsSandboxRenderSceneHandle vehicleRenderScene;
     std::size_t cursor = 0u;
     std::size_t prestartTicks = 0u;
     bool loaded = false;
@@ -1741,6 +1796,12 @@ struct PhysicsSandbox::Impl {
         view.car.gearChanged = state->gearChanged;
         view.car.wheelContact = state->wheelContact;
         view.car.wheelHasSurface = state->wheelHasSurface;
+        for (std::size_t index = 0u;
+             index < view.car.wheelGroundPosition.size();
+             ++index) {
+            view.car.wheelGroundPosition[index] =
+                    ToPublicVector(state->wheelGroundPosition[index]);
+        }
         view.car.cameraSupportUp = ToPublicVector(state->cameraSupportUp);
         view.car.localSpeed = ToPublicVector(state->localSpeed);
         view.car.freeWheeling = state->freeWheeling;
@@ -2318,6 +2379,8 @@ PhysicsSandboxResult<PhysicsSandboxStateView> PhysicsSandbox::LoadScenarioFile(
         impl_->scenarioFingerprint = Fingerprint(replayBytes);
         impl_->scene = std::move(scene);
         impl_->renderScene = std::move(renderScene);
+        impl_->vehicleRenderScene =
+                prepared.Value().vehicleRenderScene;
         impl_->inputs = SandboxInputStorage::Full(std::move(inputs));
         impl_->prestartTicks =
                 impl_->options.prestartDurationMs /
@@ -3022,6 +3085,29 @@ PhysicsSandbox::ReadRenderScene() const noexcept {
     }
 }
 
+PhysicsSandboxResult<PhysicsSandboxRenderSceneHandle>
+PhysicsSandbox::ReadVehicleRenderScene() const noexcept {
+    try {
+        if (!impl_ || !impl_->loaded || !impl_->vehicleRenderScene) {
+            return PhysicsSandboxResult<
+                    PhysicsSandboxRenderSceneHandle>::Failure(
+                    SandboxError(
+                            PhysicsSandboxErrorCode::InvalidSandbox,
+                            "sandbox has no loaded vehicle render scene"));
+        }
+        return PhysicsSandboxResult<
+                PhysicsSandboxRenderSceneHandle>::Success(
+                impl_->vehicleRenderScene);
+    } catch (...) {
+        return PhysicsSandboxResult<
+                PhysicsSandboxRenderSceneHandle>::Failure(
+                SandboxError(
+                        PhysicsSandboxErrorCode::UnexpectedFailure,
+                        "unexpected sandbox vehicle render scene read "
+                        "failure"));
+    }
+}
+
 PhysicsSandboxResult<PhysicsSandbox> CreatePhysicsSandbox(
         AssetSource source,
         const PhysicsSandboxOptions &options) noexcept {
@@ -3106,6 +3192,7 @@ PhysicsSandboxResult<PhysicsSandbox> ClonePhysicsSandbox(
         impl->scenarioFingerprint = source.impl_->scenarioFingerprint;
         impl->scene = source.impl_->scene;
         impl->renderScene = source.impl_->renderScene;
+        impl->vehicleRenderScene = source.impl_->vehicleRenderScene;
         impl->cursor = 0u;
         impl->prestartTicks = source.impl_->prestartTicks;
         impl->loaded = true;
@@ -3391,6 +3478,25 @@ PhysicsSandboxCudaSearchSession::Impl::Convert(
     view.car.angularSpeed = ToPublicVector(frame.angularSpeed);
     view.car.force = ToPublicVector(frame.force);
     view.car.torque = ToPublicVector(frame.torque);
+    const std::size_t wheelCount = std::min<std::size_t>(
+            best.state.vehicle.wheels.count,
+            view.car.wheelGroundPosition.size());
+    for (std::size_t index = 0u; index < wheelCount; ++index) {
+        const CSceneVehicleCar::SSimulationWheel::SState &physicsWheel =
+                best.state.vehicle.wheels.values[index].currentPhysics;
+        const CSceneVehicleCar::SSimulationWheel::SState &asyncWheel =
+                best.state.vehiclePassthrough.wheels[index].currentAsync;
+        view.car.wheelGroundPosition[index] = ToPublicVector(
+                physicsWheel.worldSurfacePoint);
+        view.car.wheelContact[index] = physicsWheel.contactPresent;
+        view.car.wheelHasSurface[index] = asyncWheel.contactPresent;
+        view.car.wheelSliding[index] =
+                physicsWheel.contactPresent && physicsWheel.slipping;
+        view.car.wheelSurface[index] = physicsWheel.contactPresent
+                ? static_cast<std::uint16_t>(
+                          physicsWheel.contactMaterial)
+                : static_cast<std::uint16_t>(0xffffu);
+    }
     view.accelerate = best.state.vehicle.controls.lowSpeedGateA;
     view.brake = best.state.vehicle.controls.lowSpeedGateB;
     view.steering = best.state.vehicle.controls.steeringControl;

@@ -128,6 +128,8 @@ struct PhysicsSandboxCarState {
     bool gearChanged = false;
     std::array<bool, 4> wheelContact{{true, true, true, true}};
     std::array<bool, 4> wheelHasSurface{{true, true, true, true}};
+    // World-space bottom-of-wheel points from the current physics snapshot.
+    std::array<Vector3, 4> wheelGroundPosition{};
     Vector3 cameraSupportUp{0.0f, 1.0f, 0.0f};
 
     // Script-visible vehicle state. These values mirror the condition
@@ -836,6 +838,10 @@ public:
     PhysicsSandboxResult<PhysicsSandboxStateView> ReadState() const noexcept;
     PhysicsSandboxResult<PhysicsSandboxRenderSceneHandle> ReadRenderScene()
             const noexcept;
+    // Default vehicle geometry in vehicle-local space. This is optional;
+    // callers should retain their collision-geometry fallback on failure.
+    PhysicsSandboxResult<PhysicsSandboxRenderSceneHandle>
+            ReadVehicleRenderScene() const noexcept;
     PhysicsSandboxResult<PhysicsSandboxSceneView> ReadScene() const noexcept;
 
 private:
