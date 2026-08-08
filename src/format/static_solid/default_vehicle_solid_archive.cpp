@@ -174,14 +174,13 @@ bool AddTreeDefinition(
     return true;
 }
 
-bool ExtractWheelDefinitions(
-        const StaticSolidArchiveLoadSession &archive,
+}  // namespace
+
+bool default_vehicle_solid_archive_detail::ExtractWheelDefinitions(
+        const CGameCtnReplayStaticSolidArchiveGraph &graph,
+        StaticSolidArchiveId payload,
         CPlugTree *collisionRoot,
         ReplayVehicleSolidDefinition &definitions) {
-    const StaticSolidArchiveId payload =
-            StaticSolidArchiveId::FromIndex(0u);
-    const CGameCtnReplayStaticSolidArchiveGraph &graph =
-            archive.ArchiveGraph();
     std::vector<CPlugTree *> selectedTrees;
     try {
         if (!graph.ForEachNamedTree(
@@ -221,6 +220,8 @@ bool ExtractWheelDefinitions(
     }
     return definitions.IsComplete();
 }
+
+namespace {
 
 void RootDecodedTree(CPlugTree *tree) {
     if (tree == nullptr) {
@@ -380,8 +381,11 @@ std::optional<DefaultVehicleSolidAssets> LoadVehicleAssets(
     }
 
     DefaultVehicleSolidAssets result;
-    if (!ExtractWheelDefinitions(
-                archive, collisionRoot, result.definition)) {
+    if (!default_vehicle_solid_archive_detail::ExtractWheelDefinitions(
+                archive.ArchiveGraph(),
+                payload,
+                collisionRoot,
+                result.definition)) {
         return fail("vehicle solid wheel definition extraction failed");
     }
     if (buildVisual) {
