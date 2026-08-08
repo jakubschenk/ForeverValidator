@@ -372,6 +372,77 @@ bool TestReusableLocalRenderSceneBuilder() {
     return okay;
 }
 
+bool TestRenderMaterialPreservesSemanticPaths() {
+    constexpr const char *MaterialPlainPath =
+            R"(Stadium\Media\Material\Grass.Material.Gbx)";
+    constexpr const char *MaterialSelectedPath =
+            R"(Stadium\Media\Material\87112233445566778899aabbccddeeff00)";
+    constexpr const char *ModelPlainPath =
+            R"(Techno2\Media\Material\PDiff PDiff PA TOcc PX2 Grass.Material.Gbx)";
+    constexpr const char *ModelSelectedPath =
+            R"(Techno2\Media\Material\9321436587a9cbed0f1021324354657687)";
+    constexpr const char *ShaderPlainPath =
+            R"(Techno2\Media\Shader\PDiff PDiff PA TOcc PX2.Shader.Gbx)";
+    constexpr const char *ShaderSelectedPath =
+            R"(Techno2\Media\Shader\8123456789abcdef001122334455667788)";
+
+    MaterialRenderDefinition definition;
+    definition.SetMaterialPaths(MaterialPlainPath, MaterialSelectedPath);
+    definition.SetMaterialModelPaths(ModelPlainPath, ModelSelectedPath);
+    definition.SetShaderPaths(ShaderPlainPath, ShaderSelectedPath);
+    CMwNodRef<CPlugMaterial> material = MakeMwNod<CPlugMaterial>();
+    material->SetReplayRenderDefinition(definition);
+
+    std::vector<GxVertex> vertices(3u);
+    vertices[0].position = {-1.0f, 0.0f, 0.0f};
+    vertices[1].position = {1.0f, 0.0f, 0.0f};
+    vertices[2].position = {0.0f, 1.0f, 0.0f};
+    CMwNodRef<CPlugVisualIndexedTriangles> visual =
+            MakeMwNod<CPlugVisualIndexedTriangles>();
+    visual->SetOwnedGeometry(std::move(vertices), {0u, 1u, 2u});
+    visual->SetBoundingMinMax(
+            {-1.0f, 0.0f, 0.0f},
+            {1.0f, 1.0f, 0.0f});
+
+    auto root = std::make_unique<CPlugTree>();
+    root->SetIsRooted(1);
+    root->SetVisual(visual.Get(), nullptr, material.Get(), 0);
+    CMwNodRef<CPlugSolid> solid = MakeMwNod<CPlugSolid>();
+    solid->SetOwnedTree(std::move(root), 0);
+    GmIso4 identity;
+    identity.SetIdentity();
+    StaticSceneModelCollection models;
+    bool okay = Check(
+            models.Add(StaticSceneModel(
+                    StaticSolidPrototype(solid.Get()),
+                    identity,
+                    StaticScenePurpose::Generated)),
+            "material-path scene model could not be stored");
+
+    const auto scene = BuildPhysicsSandboxRenderScene(models);
+    okay &= Check(
+            scene && scene->materials.size() == 1u,
+            "material-path scene did not expose exactly one material");
+    if (!scene || scene->materials.size() != 1u) {
+        return false;
+    }
+    const auto &output = scene->materials.front();
+    okay &= Check(
+            output.materialPlainPath == MaterialPlainPath &&
+                    output.materialSelectedPath == MaterialSelectedPath &&
+                    output.modelPlainPath == ModelPlainPath &&
+                    output.modelSelectedPath == ModelSelectedPath &&
+                    output.shaderPlainPath == ShaderPlainPath &&
+                    output.shaderSelectedPath == ShaderSelectedPath,
+            "selected material hashes erased readable semantic paths");
+    okay &= Check(
+            output.sourcePath == MaterialSelectedPath &&
+                    output.modelPath == ModelSelectedPath &&
+                    output.shaderPath == ShaderSelectedPath,
+            "legacy material paths no longer prefer selected assets");
+    return okay;
+}
+
 bool TestLazyTextureAssetResolver() {
     using forevervalidator::experimental::
             PhysicsSandboxTextureAssetEncoding;
@@ -595,6 +666,7 @@ int main() {
     okay &= TestTransformComposition();
     okay &= TestProvenanceAndImmutableScene();
     okay &= TestReusableLocalRenderSceneBuilder();
+    okay &= TestRenderMaterialPreservesSemanticPaths();
     okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();
