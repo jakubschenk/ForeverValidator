@@ -343,6 +343,8 @@ struct PhysicsSandboxMaterialBitmap {
 
 struct PhysicsSandboxRenderMaterial {
     std::uint64_t id = 0u;
+    // Compatibility aliases that prefer the selected installed-asset path
+    // and fall back to the corresponding plain path.
     std::string sourcePath;
     std::string modelPath;
     std::string shaderPath;
@@ -352,6 +354,15 @@ struct PhysicsSandboxRenderMaterial {
     bool water = false;
     bool cubeMap = false;
     bool renderTarget = false;
+    // Plain paths retain the readable authored identity used for semantic
+    // classification. Selected paths retain the installed-asset provenance,
+    // which can be a hashed path with no readable material identity.
+    std::string materialPlainPath;
+    std::string materialSelectedPath;
+    std::string modelPlainPath;
+    std::string modelSelectedPath;
+    std::string shaderPlainPath;
+    std::string shaderSelectedPath;
 };
 
 struct PhysicsSandboxRenderInstance {

@@ -526,15 +526,24 @@ private:
         if (material != nullptr) {
             const MaterialRenderDefinition &definition =
                     material->ReplayRenderDefinition();
+            output.materialPlainPath = definition.MaterialPlainPath();
+            output.materialSelectedPath =
+                    definition.MaterialSelectedPath();
+            output.modelPlainPath =
+                    definition.MaterialModelPlainPath();
+            output.modelSelectedPath =
+                    definition.MaterialModelSelectedPath();
+            output.shaderPlainPath = definition.ShaderPlainPath();
+            output.shaderSelectedPath = definition.ShaderSelectedPath();
             output.sourcePath = PreferredPath(
-                    definition.MaterialSelectedPath(),
-                    definition.MaterialPlainPath());
+                    output.materialSelectedPath,
+                    output.materialPlainPath);
             output.modelPath = PreferredPath(
-                    definition.MaterialModelSelectedPath(),
-                    definition.MaterialModelPlainPath());
+                    output.modelSelectedPath,
+                    output.modelPlainPath);
             output.shaderPath = PreferredPath(
-                    definition.ShaderSelectedPath(),
-                    definition.ShaderPlainPath());
+                    output.shaderSelectedPath,
+                    output.shaderPlainPath);
             output.shaderFlags = definition.ShaderFlags();
             output.surfaceMaterialId =
                     static_cast<std::uint8_t>(
