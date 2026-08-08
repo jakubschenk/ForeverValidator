@@ -24,6 +24,9 @@ struct PhysicsSandboxStaticSceneTestAccess;
 namespace cuda_test {
 struct PhysicsSandboxCudaTestAccess;
 }
+namespace texture_assets_internal {
+struct PhysicsSandboxTextureAssetResolverFactory;
+}
 
 class PhysicsSandboxCudaSearchSession;
 
@@ -236,11 +239,104 @@ struct PhysicsSandboxRenderMesh {
     bool hasUv1 = false;
 };
 
+// Deterministic for the same installed-pack namespace and selected asset path.
+// Zero is reserved to mean that no encoded texture asset is available.
+using PhysicsSandboxTextureAssetId = std::uint64_t;
+
+enum class PhysicsSandboxTextureAssetEncoding : std::uint8_t {
+    Unknown,
+    Dds,
+    Tga,
+    Png,
+    Jpeg,
+    Bmp,
+};
+
+struct PhysicsSandboxTextureAssetMetadata {
+    PhysicsSandboxTextureAssetId id = 0u;
+    // Logical path authored by the GBX reference table.
+    std::string logicalPath;
+    // Actual path selected from the installed pack, including hashed paths.
+    std::string sourcePath;
+    // Stable source namespace, normally the installed pack name.
+    std::string sourceName;
+    PhysicsSandboxTextureAssetEncoding encoding =
+            PhysicsSandboxTextureAssetEncoding::Unknown;
+    std::string mediaType;
+    std::size_t encodedByteCount = 0u;
+    std::uint32_t imageClassId = 0u;
+};
+
+struct PhysicsSandboxTextureAsset {
+    PhysicsSandboxTextureAssetMetadata metadata;
+    // Original encoded image file bytes (for example DDS or PNG), not RGBA.
+    std::vector<std::byte> encodedBytes;
+};
+
+using PhysicsSandboxTextureAssetHandle =
+        std::shared_ptr<const PhysicsSandboxTextureAsset>;
+
+enum class PhysicsSandboxTextureAssetErrorCode : std::uint8_t {
+    InvalidResolver,
+    UnknownAsset,
+    SourceUnavailable,
+    SourceNotFound,
+    ExtractionFailed,
+    AllocationFailed,
+    UnexpectedFailure,
+};
+
+struct PhysicsSandboxTextureAssetError {
+    PhysicsSandboxTextureAssetErrorCode code =
+            PhysicsSandboxTextureAssetErrorCode::UnexpectedFailure;
+    PhysicsSandboxTextureAssetId id = 0u;
+    std::string sourcePath;
+    std::string diagnostic;
+};
+
+using PhysicsSandboxTextureAssetReadResult =
+        DiscriminatedResult<
+                PhysicsSandboxTextureAssetHandle,
+                PhysicsSandboxTextureAssetError>;
+
+// Copyable, scene-owned lazy reader. Reads are thread-safe; each asset loads
+// independently. Successful reads are cached and share the same immutable
+// payload for the resolver lifetime.
+class PhysicsSandboxTextureAssetResolver {
+public:
+    PhysicsSandboxTextureAssetResolver() noexcept;
+    PhysicsSandboxTextureAssetResolver(
+            const PhysicsSandboxTextureAssetResolver &) noexcept;
+    PhysicsSandboxTextureAssetResolver &operator=(
+            const PhysicsSandboxTextureAssetResolver &) noexcept;
+    PhysicsSandboxTextureAssetResolver(
+            PhysicsSandboxTextureAssetResolver &&) noexcept;
+    PhysicsSandboxTextureAssetResolver &operator=(
+            PhysicsSandboxTextureAssetResolver &&) noexcept;
+    ~PhysicsSandboxTextureAssetResolver();
+
+    const std::vector<PhysicsSandboxTextureAssetMetadata> &Assets()
+            const noexcept;
+    PhysicsSandboxTextureAssetReadResult Read(
+            PhysicsSandboxTextureAssetId id) const noexcept;
+
+private:
+    struct Impl;
+    explicit PhysicsSandboxTextureAssetResolver(
+            std::shared_ptr<const Impl> impl) noexcept;
+    std::shared_ptr<const Impl> impl_;
+    friend struct texture_assets_internal::
+            PhysicsSandboxTextureAssetResolverFactory;
+};
+
 struct PhysicsSandboxMaterialBitmap {
     std::string samplerName;
     std::string sourcePath;
     std::uint32_t bitmapClassId = 0u;
     std::uint32_t renderClassId = 0u;
+    PhysicsSandboxTextureAssetId textureAssetId = 0u;
+    std::string textureSourcePath;
+    std::string textureDiagnostic;
 };
 
 struct PhysicsSandboxRenderMaterial {
@@ -294,6 +390,7 @@ struct PhysicsSandboxRenderScene {
     std::vector<PhysicsSandboxRenderMaterial> materials;
     std::vector<PhysicsSandboxRenderInstance> instances;
     std::vector<PhysicsSandboxRenderDiagnostic> diagnostics;
+    PhysicsSandboxTextureAssetResolver textureAssets;
 };
 
 using PhysicsSandboxRenderSceneHandle =

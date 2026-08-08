@@ -88,7 +88,8 @@ struct InstalledPackAssetRepository::Impl {
     InstalledPackKeyCatalog keyCatalog;
     bool hasKeyCatalog = false;
     std::string packName = "Stadium";
-    CPlugFilePack pack;
+    std::shared_ptr<CPlugFilePack> pack =
+            std::make_shared<CPlugFilePack>();
     bool packReady = false;
     BlockInfoCatalog catalog;
     bool catalogReady = false;
@@ -233,12 +234,12 @@ bool InstalledPackAssetRepository::EnsurePack() {
         return true;
     }
     const int opened = impl_->hasKeyCatalog
-            ? impl_->pack.OpenFromMemory(
+            ? impl_->pack->OpenFromMemory(
                     impl_->pakBytes.data(),
                     impl_->pakBytes.size(),
                     impl_->keyCatalog,
                     impl_->packName.c_str())
-            : impl_->pack.OpenFromMemory(
+            : impl_->pack->OpenFromMemory(
                     impl_->pakBytes.data(),
                     impl_->pakBytes.size(),
                     impl_->packlistBytes.data(),
@@ -249,7 +250,7 @@ bool InstalledPackAssetRepository::EnsurePack() {
     }
     impl_->packReady = true;
     impl_->blockInfos = std::make_unique<BlockInfoAssetStore>(
-            impl_->pack, impl_->solidReferences);
+            *impl_->pack, impl_->solidReferences);
     impl_->materials = std::make_unique<MaterialPackRepository>(impl_->pack);
     return true;
 }
@@ -260,14 +261,14 @@ const BlockInfoCatalog *InstalledPackAssetRepository::Catalog() {
     }
     if (!impl_->catalogReady) {
         if (!LoadBlockInfoCatalog(
-                    impl_->pack, *impl_->blockInfos, impl_->catalog)) {
+                    *impl_->pack, *impl_->blockInfos, impl_->catalog)) {
             return nullptr;
         }
         CGameCtnReplayCollectionZoneSources zoneSources;
         if (!zoneSources.LoadFromCatalogCollection(
-                    &impl_->pack, impl_->packName.c_str()) ||
+                    impl_->pack.get(), impl_->packName.c_str()) ||
             !zoneSources.ApplyCollectionLandZoneHeights(
-                    &impl_->pack,
+                    impl_->pack.get(),
                     impl_->packName.c_str(),
                     &impl_->catalog)) {
             impl_->catalog.Clear();
@@ -322,9 +323,9 @@ InstalledPackAssetRepository::Collection(std::string_view name) {
         auto collection = std::make_unique<LoadedCollection>();
         collection->name.assign(name.data(), name.size());
         if (!collection->zoneSources.LoadFromCatalogCollection(
-                    &impl_->pack, collection->name.c_str()) ||
+                    impl_->pack.get(), collection->name.c_str()) ||
             !collection->replacementPairs.LoadCatalogCollection(
-                    &impl_->pack, collection->name.c_str()) ||
+                    impl_->pack.get(), collection->name.c_str()) ||
             collection->replacementPairs.OverflowCount() != 0u) {
             return std::nullopt;
         }
@@ -356,7 +357,7 @@ InstalledPackAssetRepository::Collection(std::string_view name) {
         if (collection->zoneSources.HasWaterDefinition()) {
             CatalogCollectionWaterDefinition water;
             if (!collection->zoneSources.BuildWaterDefinition(
-                        &impl_->pack,
+                        impl_->pack.get(),
                         collection->name.c_str(),
                         &water)) {
                 return std::nullopt;
@@ -382,7 +383,7 @@ InstalledPackAssetRepository::DecorationSize(
             return loaded.definition;
         }
     }
-    const auto decoded = ResolveReplayDecorationSize(impl_->pack, mapInput);
+    const auto decoded = ResolveReplayDecorationSize(*impl_->pack, mapInput);
     if (!decoded) {
         return std::nullopt;
     }
@@ -435,7 +436,7 @@ InstalledPackAssetRepository::ResolveMaterialPath(std::string_view plainPath) {
 
 const CPlugFilePack *InstalledPackAssetRepositoryAccess::Pack(
         InstalledPackAssetRepository &repository) {
-    return repository.EnsurePack() ? &repository.impl_->pack : nullptr;
+    return repository.EnsurePack() ? repository.impl_->pack.get() : nullptr;
 }
 
 StaticSolidArchiveReferenceCatalog &

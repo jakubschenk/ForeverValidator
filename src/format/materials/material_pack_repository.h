@@ -10,6 +10,8 @@ struct CPlugFilePack;
 class MaterialPackRepository {
 public:
     explicit MaterialPackRepository(CPlugFilePack &pack);
+    explicit MaterialPackRepository(
+            std::shared_ptr<const CPlugFilePack> pack);
     ~MaterialPackRepository();
 
     MaterialPackRepository(const MaterialPackRepository &) = delete;

@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "engine/core/engine_types.h"
+
+class MaterialTextureAssetSource;
 
 struct MaterialRenderBitmapDefinition {
     std::string samplerName;
@@ -11,6 +15,12 @@ struct MaterialRenderBitmapDefinition {
     std::string selectedPath;
     u32 bitmapClassId = 0u;
     u32 renderClassId = 0u;
+    std::string imagePlainPath;
+    std::string imageSelectedPath;
+    u32 imageClassId = 0u;
+    std::size_t imageEncodedByteCount = 0u;
+    std::shared_ptr<const MaterialTextureAssetSource> imageSource;
+    std::string imageDiagnostic;
 };
 
 class MaterialRenderDefinition {

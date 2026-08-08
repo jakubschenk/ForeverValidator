@@ -1,8 +1,10 @@
 #include "format/materials/material_pack_repository.h"
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "engine/game/material_texture_asset_source.h"
 #include "format/pack/installed/byte_buffer.h"
 #include "format/materials/material_archive_decoder.h"
 #include "format/materials/material_render_archive_decoder.h"
@@ -11,6 +13,87 @@
 #include "format/materials/skin_material_remap_catalog.h"
 #include <new>
 namespace {
+
+MaterialTextureAssetSourceResult TextureSourceFailure(
+        MaterialTextureAssetSourceErrorCode code,
+        std::string diagnostic) {
+    MaterialTextureAssetSourceError error;
+    error.code = code;
+    error.diagnostic = std::move(diagnostic);
+    return MaterialTextureAssetSourceResult::Failure(std::move(error));
+}
+
+class PackMaterialTextureAssetSource final
+        : public MaterialTextureAssetSource {
+public:
+    explicit PackMaterialTextureAssetSource(
+            std::shared_ptr<const CPlugFilePack> pack)
+            : pack_(std::move(pack)),
+              stableNamespace_(pack_ ? pack_->PackName() : std::string{}) {}
+
+    std::string_view StableNamespace(void) const noexcept override {
+        return stableNamespace_;
+    }
+
+    MaterialTextureAssetSourceResult ReadEncodedBytes(
+            std::string_view selectedPath) const noexcept override {
+        try {
+            if (!pack_) {
+                return TextureSourceFailure(
+                        MaterialTextureAssetSourceErrorCode::
+                                SourceUnavailable,
+                        "installed pack storage is no longer available");
+            }
+            if (selectedPath.empty()) {
+                return TextureSourceFailure(
+                        MaterialTextureAssetSourceErrorCode::SourceNotFound,
+                        "texture source path is empty");
+            }
+            const std::string path(selectedPath);
+            const CPlugFileFidContainer_SFileDesc *descriptor =
+                    pack_->FindFileDescByPath(path.c_str());
+            if (descriptor == nullptr) {
+                return TextureSourceFailure(
+                        MaterialTextureAssetSourceErrorCode::SourceNotFound,
+                        "texture is not present in installed pack '" +
+                                stableNamespace_ + "': " + path);
+            }
+            ByteBuffer bytes;
+            if (!pack_->ExtractPath(path.c_str(), &bytes) || bytes.Empty()) {
+                return TextureSourceFailure(
+                        MaterialTextureAssetSourceErrorCode::ExtractionFailed,
+                        "failed to decode texture payload from installed "
+                        "pack '" + stableNamespace_ + "': " + path);
+            }
+            if (bytes.Size() != descriptor->uncompressedSize) {
+                return TextureSourceFailure(
+                        MaterialTextureAssetSourceErrorCode::ExtractionFailed,
+                        "decoded texture byte count does not match the pack "
+                        "descriptor: " + path);
+            }
+            std::vector<std::byte> encoded(bytes.Size());
+            std::memcpy(encoded.data(), bytes.Data(), bytes.Size());
+            return MaterialTextureAssetSourceResult::Success(
+                    std::move(encoded));
+        } catch (const std::bad_alloc &) {
+            MaterialTextureAssetSourceError error;
+            error.code =
+                    MaterialTextureAssetSourceErrorCode::AllocationFailed;
+            return MaterialTextureAssetSourceResult::Failure(
+                    std::move(error));
+        } catch (...) {
+            MaterialTextureAssetSourceError error;
+            error.code =
+                    MaterialTextureAssetSourceErrorCode::UnexpectedFailure;
+            return MaterialTextureAssetSourceResult::Failure(
+                    std::move(error));
+        }
+    }
+
+private:
+    std::shared_ptr<const CPlugFilePack> pack_;
+    std::string stableNamespace_;
+};
 
 struct StoredMaterialAsset {
     std::string path;
@@ -54,9 +137,18 @@ bool ExtractMaterialBytes(const CPlugFilePack &pack,
 }  // namespace
 
 struct MaterialPackRepository::Impl {
-    explicit Impl(CPlugFilePack &sourcePack) : pack(sourcePack) {}
+    explicit Impl(CPlugFilePack &sourcePack) : pack(&sourcePack) {}
 
-    CPlugFilePack &pack;
+    explicit Impl(std::shared_ptr<const CPlugFilePack> sourcePack)
+            : ownedPack(std::move(sourcePack)),
+              pack(ownedPack.get()),
+              textureSource(
+                      std::make_shared<PackMaterialTextureAssetSource>(
+                              ownedPack)) {}
+
+    std::shared_ptr<const CPlugFilePack> ownedPack;
+    const CPlugFilePack *pack = nullptr;
+    std::shared_ptr<const MaterialTextureAssetSource> textureSource;
     std::vector<StoredMaterialAsset> assets;
     SkinMaterialRemapCatalog remaps;
     bool remapsLoaded = false;
@@ -77,7 +169,7 @@ std::optional<MaterialAssetDefinition> MaterialPackRepository::Impl::Load(
             return std::nullopt;
         }
         ByteBuffer bytes;
-        if (!ExtractMaterialBytes(pack, path, bytes) ||
+        if (pack == nullptr || !ExtractMaterialBytes(*pack, path, bytes) ||
             bytes.Empty() || bytes.Size() > UINT32_MAX) {
             return std::nullopt;
         }
@@ -89,7 +181,8 @@ std::optional<MaterialAssetDefinition> MaterialPackRepository::Impl::Load(
         }
         MaterialRenderDefinition render;
         std::optional<MaterialRenderDefinition> decodedRender =
-                DecodeMaterialRenderArchive(pack, path.c_str());
+                DecodeMaterialRenderArchive(
+                        *pack, path.c_str(), textureSource);
         if (decodedRender) {
             render = std::move(*decodedRender);
         }
@@ -104,6 +197,10 @@ std::optional<MaterialAssetDefinition> MaterialPackRepository::Impl::Load(
 MaterialPackRepository::MaterialPackRepository(CPlugFilePack &pack)
         : impl_(std::make_unique<Impl>(pack)) {}
 
+MaterialPackRepository::MaterialPackRepository(
+        std::shared_ptr<const CPlugFilePack> pack)
+        : impl_(std::make_unique<Impl>(std::move(pack))) {}
+
 MaterialPackRepository::~MaterialPackRepository() = default;
 
 std::optional<ResolvedMaterialDefinition> MaterialPackRepository::Resolve(
@@ -113,7 +210,10 @@ std::optional<ResolvedMaterialDefinition> MaterialPackRepository::Resolve(
     }
     std::string sourcePath;
     try {
-        sourcePath = impl_->pack.PackName();
+        if (impl_->pack == nullptr) {
+            return std::nullopt;
+        }
+        sourcePath = impl_->pack->PackName();
         sourcePath.append("\\Media\\Material\\");
         sourcePath.append(identifier.data(), identifier.size());
     } catch (const std::bad_alloc &) {
@@ -142,7 +242,7 @@ std::optional<ResolvedMaterialDefinition> MaterialPackRepository::ResolvePath(
     }
 
     if (!impl_->remapsLoaded) {
-        if (!impl_->remaps.Load(impl_->pack)) {
+        if (impl_->pack == nullptr || !impl_->remaps.Load(*impl_->pack)) {
             return std::nullopt;
         }
         impl_->remapsLoaded = true;
