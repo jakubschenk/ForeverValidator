@@ -110,6 +110,24 @@ void WriteHotPathJson(
            << metrics.physicsCallbackDisabledForcePassCount
            << ",\"hot_path_zero_dynamics_force_pass_count\":"
            << metrics.zeroDynamicsForcePassCount
+           << ",\"hot_path_empty_air_opportunity_count\":"
+           << metrics.emptyAirOpportunityCount
+           << ",\"hot_path_empty_air_probe_attempt_count\":"
+           << metrics.emptyAirProbeAttemptCount
+           << ",\"hot_path_empty_air_probe_success_count\":"
+           << metrics.emptyAirProbeSuccessCount
+           << ",\"hot_path_empty_air_probe_blocked_count\":"
+           << metrics.emptyAirProbeBlockedCount
+           << ",\"hot_path_empty_air_certificate_reuse_count\":"
+           << metrics.emptyAirCertificateReuseCount
+           << ",\"hot_path_empty_air_certificate_invalidation_count\":"
+           << metrics.emptyAirCertificateInvalidationCount
+           << ",\"hot_path_empty_air_probe_acceleration_cell_visit_count\":"
+           << metrics.emptyAirProbeAccelerationCellVisitCount
+           << ",\"hot_path_empty_air_probe_octree_cell_visit_count\":"
+           << metrics.emptyAirProbeOctreeCellVisitCount
+           << ",\"hot_path_empty_air_zero_hit_fast_return_count\":"
+           << metrics.emptyAirZeroHitFastReturnCount
            << ",\"hot_path_average_first_simulation_tick\":"
            << Ratio(
                       metrics.firstSimulationTickSum,
@@ -146,6 +164,18 @@ void WriteHotPathJson(
            << Ratio(metrics.airForcePassCount, forcePasses)
            << ",\"hot_path_water_force_share\":"
            << Ratio(metrics.waterForcePassCount, forcePasses);
+    stream << ",\"hot_path_empty_air_probe_success_rate\":"
+           << Ratio(
+                      metrics.emptyAirProbeSuccessCount,
+                      metrics.emptyAirProbeAttemptCount)
+           << ",\"hot_path_empty_air_probe_block_rate\":"
+           << Ratio(
+                      metrics.emptyAirProbeBlockedCount,
+                      metrics.emptyAirProbeAttemptCount)
+           << ",\"hot_path_empty_air_reuses_per_success\":"
+           << Ratio(
+                      metrics.emptyAirCertificateReuseCount,
+                      metrics.emptyAirProbeSuccessCount);
 }
 
 std::string Diagnostic(const PhysicsSandboxError &error) {
@@ -424,7 +454,8 @@ int main(int argc, char **argv) {
                 "[--existing-min COUNT] [--existing-max COUNT] "
                 "[--no-winner-state] [--no-locality-sort] "
                 "[--no-prefix-reuse] [--no-dedup] "
-                "[--hot-path-metrics] "
+                "[--hot-path-metrics] [--empty-air-certificate] "
+                "[--session-specialization] "
                 "[--minimum-blocks 8|12|16] "
                 "[--batch-capacity COUNT]");
     }
@@ -466,6 +497,8 @@ int main(int argc, char **argv) {
     bool reuseBaselinePrefixes = true;
     bool deduplicateLowEntropyCandidateInputs = true;
     bool collectHotPathMetrics = false;
+    bool useEmptyAirCertificate = false;
+    bool useSessionSpecialization = false;
     std::uint32_t simulationMinimumBlocks = 0u;
     std::uint32_t batchCapacity = candidateCount;
     for (int argument = 10; argument < argc; ++argument) {
@@ -488,6 +521,14 @@ int main(int argc, char **argv) {
         }
         if (option == "--hot-path-metrics") {
             collectHotPathMetrics = true;
+            continue;
+        }
+        if (option == "--empty-air-certificate") {
+            useEmptyAirCertificate = true;
+            continue;
+        }
+        if (option == "--session-specialization") {
+            useSessionSpecialization = true;
             continue;
         }
         if (argument + 1 >= argc) {
@@ -541,6 +582,7 @@ int main(int argc, char **argv) {
     }
     PhysicsSandboxOptions options;
     options.backend = SimulationBackend::Cuda;
+    options.prepareCudaSearchSpecialization = useSessionSpecialization;
     auto sandbox = CreatePhysicsSandbox(
             std::move(source).Value(), options);
     if (!sandbox) {
@@ -722,6 +764,8 @@ int main(int argc, char **argv) {
             simulationMinimumBlocks;
     configuration.captureBestState = captureBestState;
     configuration.collectHotPathMetrics = collectHotPathMetrics;
+    configuration.useEmptyAirCertificate = useEmptyAirCertificate;
+    configuration.useSessionSpecialization = useSessionSpecialization;
 
     auto session = CreatePhysicsSandboxCudaSearchSession(
             sandbox.Value(), configuration);
@@ -1149,6 +1193,10 @@ int main(int argc, char **argv) {
                   << (collectHotPathMetrics ? "true" : "false") << ","
                   << "\"hot_path_metrics_timing_is_production\":"
                   << (collectHotPathMetrics ? "false" : "true") << ","
+                  << "\"empty_air_certificate_requested\":"
+                  << (useEmptyAirCertificate ? "true" : "false") << ","
+                  << "\"session_specialization_requested\":"
+                  << (useSessionSpecialization ? "true" : "false") << ","
                   << "\"hot_path_forced_runtime_generic_kernel\":"
                   << (batch.Value().metrics.hotPath.
                                       forcedRuntimeGenericKernel
