@@ -16,6 +16,7 @@
 #include "simulation/runtime/replay_simulation_session.h"
 #include "simulation/runtime/physics_sandbox_texture_assets.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -578,6 +579,59 @@ bool TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot() {
                             .MaterialDefinitionCount() == 1u &&
                     sawMaterial && loadedTexture,
             "descriptor-relative vehicle material lost its texture asset");
+
+    const auto attemptedPathResolutions = [](
+            const std::string &identifier,
+            const char *descriptor) {
+        CGameCtnReplayStaticSolidArchiveNodeGraph candidateNodes;
+        const ArchiveNodeReference candidateMaterial =
+                ArchiveNodeReference::FromIndex(0u);
+        if (!candidateNodes.EnsureNodeCapacity(candidateMaterial.Index()) ||
+            !candidateNodes.MarkExternalNode(
+                    candidateMaterial,
+                    1u,
+                    ArchiveNodeReference::InvalidIndex,
+                    identifier)) {
+            return std::uint32_t{0u};
+        }
+        DescriptorRelativeMaterialRepository candidateRepository;
+        StaticSolidArchiveLoadSession candidateArchive;
+        candidateArchive.InstallMaterialAssets(candidateRepository);
+        (void)StaticSolidMaterialAssetLinker::ResolveAndAppend(
+                &candidateNodes,
+                nullptr,
+                &candidateArchive,
+                StaticSolidArchiveId::FromIndex(0u),
+                candidateMaterial.Index(),
+                descriptor);
+        return candidateRepository.PathResolutionCount();
+    };
+    okay &= Check(
+            attemptedPathResolutions(
+                    "StadiumCarSkin.Material.Gbx",
+                    VehicleDescriptor) == 1u,
+            "bare vehicle material lost legacy prefix resolution");
+    std::string embeddedNul =
+            R"(Material\StadiumCarSkin.Material.Gbx)";
+    embeddedNul.push_back('\0');
+    embeddedNul += "ignored";
+    const std::array<std::string, 4u> invalidIdentifiers{{
+            R"(Material\..\StadiumCarSkin.Material.Gbx)",
+            R"(Material\\StadiumCarSkin.Material.Gbx)",
+            R"(Material/StadiumCarSkin.Material.Gbx)",
+            embeddedNul,
+    }};
+    for (const std::string &invalid : invalidIdentifiers) {
+        okay &= Check(
+                attemptedPathResolutions(invalid, VehicleDescriptor) == 0u,
+                "unsafe descriptor-relative vehicle material reached the "
+                "pack repository");
+    }
+    okay &= Check(
+            attemptedPathResolutions(
+                    ExternalMaterial,
+                    R"(Vehicles\Solid\StadiumCar.Solid.Gbx)") == 0u,
+            "vehicle material resolved without a descriptor Media root");
     return okay;
 }
 
