@@ -623,6 +623,20 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
     add_test(NAME forevervalidator-cuda-static-configuration
              COMMAND forevervalidator-cuda-static-configuration-tests)
 
+    add_executable(forevervalidator-cuda-scene-storage-tests
+        tests/cuda_scene_storage_tests.cpp)
+    target_include_directories(
+        forevervalidator-cuda-scene-storage-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(
+        forevervalidator-cuda-scene-storage-tests PRIVATE
+        forevervalidator_core)
+    forevervalidator_configure_target(
+        forevervalidator-cuda-scene-storage-tests)
+    add_test(NAME forevervalidator-cuda-scene-storage
+             COMMAND forevervalidator-cuda-scene-storage-tests)
+
     if(FOREVERVALIDATOR_ENABLE_CUDA)
         if(FOREVERVALIDATOR_USING_DEFAULT_CUDA_ARCHITECTURES)
             find_program(FOREVERVALIDATOR_CUOBJDUMP_EXECUTABLE
@@ -762,6 +776,7 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
             tests/cuda_search_winner_reduction_tests.cu)
         target_include_directories(
             forevervalidator-cuda-search-winner-reduction-tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
             "${CMAKE_CURRENT_SOURCE_DIR}/src")
         forevervalidator_configure_target(
             forevervalidator-cuda-search-winner-reduction-tests)
@@ -794,6 +809,28 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
             forevervalidator-cuda-search-branch-state-tests)
         add_test(NAME forevervalidator-cuda-search-branch-state
                  COMMAND forevervalidator-cuda-search-branch-state-tests)
+
+        add_executable(forevervalidator-cuda-search-prefix-integration-tests
+            tests/cuda_search_prefix_integration_tests.cpp)
+        target_include_directories(
+            forevervalidator-cuda-search-prefix-integration-tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(
+            forevervalidator-cuda-search-prefix-integration-tests PRIVATE
+            forevervalidator_core CUDA::cudart)
+        forevervalidator_configure_target(
+            forevervalidator-cuda-search-prefix-integration-tests)
+        add_test(NAME forevervalidator-cuda-search-prefix-integration
+                 COMMAND
+                 forevervalidator-cuda-search-prefix-integration-tests)
+        set_tests_properties(
+            forevervalidator-cuda-search-prefix-integration PROPERTIES
+            RUN_SERIAL TRUE
+            RESOURCE_LOCK forevervalidator_cuda
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            LABELS cuda)
     endif()
 
     add_executable(forevervalidator-render-scene-tests

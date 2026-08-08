@@ -545,6 +545,17 @@ struct PhysicsSandboxCudaSearchConfiguration {
     bool useSessionSpecialization = false;
     // Retains the original materialization path for exact differential tests.
     bool useLegacyMutationPipelineForTesting = false;
+    // Groups candidates with similar early resolved controls before simulation.
+    bool sortCandidatesByLocality = true;
+    // Reuses the evaluated baseline before each candidate's first changed
+    // input. Disable this for exact full-timeline differential checks.
+    bool reuseBaselinePrefixes = true;
+    // Collapses identical low-entropy insertion candidates while retaining
+    // their logical candidate results and ordering.
+    bool deduplicateLowEntropyCandidateInputs = true;
+    // Selects a compiled CUDA launch-bounds variant for performance tests.
+    // Zero retains automatic selection.
+    std::uint32_t simulationMinimumBlocksPerMultiprocessorForTesting = 0u;
     // ForeverTAS resolves improved runs on its optimized CPU worker. Other
     // callers retain the compatible CUDA winner-state capture by default.
     bool captureBestState = true;
@@ -577,6 +588,13 @@ struct PhysicsSandboxCudaSearchMetrics {
     std::uint64_t mutationDeviceBytes = 0u;
     std::uint64_t candidateInputDeviceBytes = 0u;
     std::uint64_t mutationScratchDeviceBytes = 0u;
+    std::uint64_t baselinePrefixDeviceBytes = 0u;
+    std::uint64_t candidatePrefixDeviceBytes = 0u;
+    std::uint64_t candidateDeduplicationDeviceBytes = 0u;
+    bool baselinePrefixReuseActive = false;
+    bool candidateDeduplicationActive = false;
+    std::uint32_t simulatedCandidateCount = 0u;
+    std::uint32_t deduplicatedCandidateCount = 0u;
     // Winner-selection storage only; independent of the evaluation window.
     std::uint64_t winnerSelectionDeviceBytes = 0u;
     std::uint64_t hostToDeviceBytes = 0u;
@@ -590,6 +608,8 @@ struct PhysicsSandboxCudaSearchMetrics {
     double winnerReductionKernelMilliseconds = 0.0;
     double winnerStateCaptureKernelMilliseconds = 0.0;
     double finalizationKernelMilliseconds = 0.0;
+    // The minimum-blocks-per-SM launch-bounds variant actually dispatched.
+    std::uint32_t simulationSelectedMinimumBlocksPerMultiprocessor = 0u;
     std::uint32_t simulationThreadsPerBlock = 0u;
     std::uint32_t simulationRegistersPerThread = 0u;
     std::uint64_t simulationLocalBytesPerThread = 0u;
@@ -709,6 +729,9 @@ public:
             noexcept;
     PhysicsSandboxResult<PhysicsSandboxCudaSearchBatch> EvaluateBaseline(
             const std::function<bool()> &cancellationRequested) noexcept;
+    // Candidate IDs are zero-based. Conditions observe Iterations=0 for the
+    // baseline and a one-based logical mutation iteration for candidates;
+    // UINT64_MAX is accepted and is exposed as 2^64 in double precision.
     PhysicsSandboxResult<PhysicsSandboxCudaSearchBatch> RunBatch(
             std::uint64_t firstCandidateId,
             std::uint32_t candidateCount,

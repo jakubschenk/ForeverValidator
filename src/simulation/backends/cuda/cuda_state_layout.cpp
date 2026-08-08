@@ -1,6 +1,7 @@
 #include "simulation/backends/cuda/cuda_state_layout.h"
 
 #include <algorithm>
+#include <cstring>
 #include <new>
 
 #include "simulation/runtime/replay_simulation_session.h"
@@ -508,7 +509,11 @@ CudaStateConversionResult EncodeCudaRaceState(
     if (destination == nullptr) {
         return CudaStateConversionResult::InvalidArgument;
     }
-    *destination = CudaRaceState{};
+    // Value assignment initializes members but is not required to overwrite
+    // padding. Clear the complete trivially-copyable transport object first
+    // so raw state copies and fingerprints are deterministic.
+    std::memset(destination, 0, sizeof(*destination));
+    ::new (static_cast<void *>(destination)) CudaRaceState{};
     return EncodeRace(
             source, *destination, destination->stunts,
             destination->stuntEvents);
@@ -550,7 +555,12 @@ CudaStateConversionResult EncodeCudaCandidateState(
     if (destination == nullptr) {
         return CudaStateConversionResult::InvalidArgument;
     }
-    *destination = CudaCandidateState{};
+    // Member assignment does not have to overwrite padding in the enclosing
+    // transport object. Clear the complete storage before beginning a fresh
+    // lifetime so device copies, hashes, and deduplication keys never depend
+    // on bytes left by the caller.
+    std::memset(destination, 0, sizeof(*destination));
+    ::new (static_cast<void *>(destination)) CudaCandidateState{};
     destination->candidateId = candidateId;
     destination->validationSeed = validationSeed;
     destination->randomState = randomState;

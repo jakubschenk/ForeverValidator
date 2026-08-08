@@ -3224,6 +3224,22 @@ PhysicsSandboxCudaSearchSession::Impl::Convert(
             execution.winnerStateCaptureKernelMilliseconds;
     result.metrics.finalizationKernelMilliseconds =
             execution.finalizationKernelMilliseconds;
+    result.metrics.baselinePrefixDeviceBytes =
+            execution.baselinePrefixDeviceBytes;
+    result.metrics.candidatePrefixDeviceBytes =
+            execution.candidatePrefixDeviceBytes;
+    result.metrics.candidateDeduplicationDeviceBytes =
+            execution.candidateDeduplicationDeviceBytes;
+    result.metrics.baselinePrefixReuseActive =
+            execution.baselinePrefixReuseActive;
+    result.metrics.candidateDeduplicationActive =
+            execution.candidateDeduplicationActive;
+    result.metrics.simulatedCandidateCount =
+            execution.simulatedCandidateCount;
+    result.metrics.deduplicatedCandidateCount =
+            execution.deduplicatedCandidateCount;
+    result.metrics.simulationSelectedMinimumBlocksPerMultiprocessor =
+            execution.simulationSelectedMinimumBlocksPerMultiprocessor;
     result.metrics.simulationThreadsPerBlock =
             execution.simulationThreadsPerBlock;
     result.metrics.simulationRegistersPerThread =
@@ -3604,6 +3620,15 @@ CreatePhysicsSandboxCudaSearchSession(
         internal.maximumEventCount = maximumEventCount;
         internal.useLegacyMutationPipelineForTesting =
                 configuration.useLegacyMutationPipelineForTesting;
+        internal.sortCandidatesByLocality =
+                configuration.sortCandidatesByLocality;
+        internal.reuseBaselinePrefixes =
+                configuration.reuseBaselinePrefixes;
+        internal.deduplicateLowEntropyCandidateInputs =
+                configuration.deduplicateLowEntropyCandidateInputs;
+        internal.simulationMinimumBlocksPerMultiprocessorForTesting =
+                configuration.
+                        simulationMinimumBlocksPerMultiprocessorForTesting;
         internal.captureBestState = configuration.captureBestState;
         if (configuration.incumbent) {
             if (configuration.incumbent->mutationCount >
