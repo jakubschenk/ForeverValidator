@@ -996,15 +996,20 @@ ReplaySimulationRuntime::CurrentRaceCameraState() const {
             CSceneVehicleCarEngineControlState_GearShift;
     const std::size_t wheelCount =
             std::min<std::size_t>(car.WheelGetCount(), 4u);
+    const GmIso4 liveCorpusIso = state_->body.CaptureCurrentFrame().Location();
     for (std::size_t index = 0u; index < wheelCount; ++index) {
         const CSceneVehicleCar::SSimulationWheel &wheel =
                 car.WheelAt(static_cast<u32>(index));
-        result.wheelContact[index] =
-                wheel.currentPhysicsState.contactPresent;
-        result.wheelHasSurface[index] =
-                wheel.asyncState.contactPresent;
-        result.wheelGroundPosition[index] =
-                wheel.currentPhysicsState.worldSurfacePoint;
+        // The canonical headless path does not run the presentation snapshot
+        // refresh used by the game renderer. Publish the authoritative live
+        // contact and transform the wheel-bottom point through the live body
+        // frame instead of reading permanently empty presentation snapshots.
+        result.wheelContact[index] = wheel.realTimeState.contactPresent;
+        result.wheelHasSurface[index] = wheel.realTimeState.contactPresent;
+        GmVec3 localGroundPosition = wheel.surfaceHandler.CurrentPoint();
+        localGroundPosition.y -= wheel.rollingRadius;
+        result.wheelGroundPosition[index].SetMult(
+                localGroundPosition, liveCorpusIso);
     }
     return result;
 }

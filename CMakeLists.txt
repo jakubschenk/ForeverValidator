@@ -901,6 +901,23 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
         SKIP_RETURN_CODE 77
         LABELS integration)
 
+    add_executable(forevervalidator-wheel-ground-state-fixture-tests
+        tests/wheel_ground_state_fixture_tests.cpp)
+    target_include_directories(
+        forevervalidator-wheel-ground-state-fixture-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(
+        forevervalidator-wheel-ground-state-fixture-tests PRIVATE
+        forevervalidator_native)
+    forevervalidator_configure_target(
+        forevervalidator-wheel-ground-state-fixture-tests)
+    add_test(NAME forevervalidator-wheel-ground-state-fixture
+        COMMAND forevervalidator-wheel-ground-state-fixture-tests)
+    set_tests_properties(
+        forevervalidator-wheel-ground-state-fixture PROPERTIES
+        SKIP_RETURN_CODE 77
+        LABELS integration)
+
     add_executable(forevervalidator-replay-control-plan-tests
         tests/replay_control_plan_tests.cpp)
     target_include_directories(
