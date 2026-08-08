@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <memory>
 
+#include <forevervalidator/validation.h>
+
 #include "engine/resources/catalog_asset_repository.h"
 #include "engine/game/material_definition.h"
 #include "engine/scene/static_scene_model.h"
@@ -50,3 +52,10 @@ std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
         std::size_t pakByteCount,
         const InstalledPackKeyCatalog &keyCatalog,
         const char *packName);
+
+std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
+        const std::byte *pakBytes,
+        std::size_t pakByteCount,
+        const InstalledPackKeyCatalog &keyCatalog,
+        const char *packName,
+        forevervalidator::AssetProvider looseAssetProvider);

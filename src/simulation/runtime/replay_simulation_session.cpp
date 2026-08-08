@@ -45,6 +45,7 @@
 #include "simulation/runtime/replay_simulation_runtime.h"
 #include "simulation/runtime/replay_vehicle_body.h"
 #include "simulation/runtime/replay_vehicle_simulation.h"
+#include "simulation/runtime/physics_sandbox_texture_assets.h"
 #include "engine/game/trackmania_race.h"
 #include "simulation/runtime/replay_deterministic_execution.h"
 namespace {
@@ -502,6 +503,7 @@ public:
                        0.0f);
         }
         ClassifyRenderLayers(*scene_);
+        scene_->textureAssets = std::move(textureAssets_).Build();
         return scene_;
     }
 
@@ -540,12 +542,17 @@ private:
             output.water = definition.HasBitmapRenderWater();
             for (const MaterialRenderBitmapDefinition &bitmap :
                  definition.Bitmaps()) {
-                output.bitmaps.push_back({
-                        bitmap.samplerName,
-                        PreferredPath(bitmap.selectedPath,
-                                      bitmap.plainPath),
-                        bitmap.bitmapClassId,
-                        bitmap.renderClassId});
+                sandbox::PhysicsSandboxMaterialBitmap outputBitmap;
+                outputBitmap.samplerName = bitmap.samplerName;
+                outputBitmap.sourcePath = PreferredPath(
+                        bitmap.selectedPath, bitmap.plainPath);
+                outputBitmap.bitmapClassId = bitmap.bitmapClassId;
+                outputBitmap.renderClassId = bitmap.renderClassId;
+                outputBitmap.textureSourcePath = PreferredPath(
+                        bitmap.imageSelectedPath, bitmap.imagePlainPath);
+                outputBitmap.textureAssetId = textureAssets_.Add(
+                        bitmap, &outputBitmap.textureDiagnostic);
+                output.bitmaps.push_back(std::move(outputBitmap));
                 output.cubeMap = output.cubeMap ||
                         bitmap.renderClassId ==
                                 TMNF_CLASS_CPlugBitmapRenderCubeMap;
@@ -758,6 +765,8 @@ private:
     std::unordered_map<const CPlugVisual *, std::uint32_t> meshIndices_;
     std::unordered_map<const CPlugMaterial *, std::uint32_t>
             materialIndices_;
+    sandbox::texture_assets_internal::PhysicsSandboxTextureAssetRegistry
+            textureAssets_;
 };
 
 sandbox::PhysicsSandboxRenderSceneHandle BuildStaticRenderScene(

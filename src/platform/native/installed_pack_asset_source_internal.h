@@ -8,6 +8,8 @@ namespace forevervalidator::native_detail {
 
 struct InstalledPackRoot {
     std::string canonicalPath;
+    // Loose game assets referenced by packed GBX files live beside Packs.
+    std::string canonicalGameDataPath;
 };
 
 Result<InstalledPackRoot> ResolveInstalledPackRoot(
