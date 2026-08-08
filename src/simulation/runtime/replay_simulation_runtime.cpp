@@ -1003,6 +1003,8 @@ ReplaySimulationRuntime::CurrentRaceCameraState() const {
                 wheel.currentPhysicsState.contactPresent;
         result.wheelHasSurface[index] =
                 wheel.asyncState.contactPresent;
+        result.wheelGroundPosition[index] =
+                wheel.currentPhysicsState.worldSurfacePoint;
     }
     return result;
 }

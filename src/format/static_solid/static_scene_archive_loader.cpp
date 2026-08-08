@@ -584,6 +584,11 @@ int StaticSolidArchiveLoadSession::InstallPackSource(
     return payloadPackSource.Install(pack);
 }
 
+void StaticSolidArchiveLoadSession::InstallMaterialAssets(
+        MaterialAssetRepository &assets) {
+    materialAssets = &assets;
+}
+
 int StaticSolidArchivePackSource::Install(
         const CPlugFilePack &newPack) {
     pack = &newPack;

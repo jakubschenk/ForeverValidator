@@ -47,5 +47,18 @@ public:
             CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
             const SceneDescriptorFolderPaths *externalFolders,
             StaticSolidArchiveLoadSession *store,
+            StaticSolidArchiveId payload,
+            u32 materialNodeIndex,
+            const char *sourceDescriptorPath);
+    static bool ResolveAndAppend(
+            CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
+            const SceneDescriptorFolderPaths *externalFolders,
+            StaticSolidArchiveLoadSession *store,
             CGameCtnReplayStaticSolidArchiveNodeIdentity material);
+    static bool ResolveAndAppend(
+            CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
+            const SceneDescriptorFolderPaths *externalFolders,
+            StaticSolidArchiveLoadSession *store,
+            CGameCtnReplayStaticSolidArchiveNodeIdentity material,
+            const char *sourceDescriptorPath);
 };

@@ -48,6 +48,7 @@ struct ReplaySimulationStateView {
     bool gearChanged = false;
     std::array<bool, 4> wheelContact{{true, true, true, true}};
     std::array<bool, 4> wheelHasSurface{{true, true, true, true}};
+    std::array<GmVec3, 4> wheelGroundPosition{};
     GmVec3 cameraSupportUp{0.0f, 1.0f, 0.0f};
     GmVec3 localSpeed{};
     bool freeWheeling = false;
@@ -89,6 +90,10 @@ std::uint64_t ReplaySimulationInstanceSemanticHash(
 
 void ClassifyPhysicsSandboxRenderLayers(
         forevervalidator::experimental::PhysicsSandboxRenderScene &scene);
+
+forevervalidator::experimental::PhysicsSandboxRenderSceneHandle
+BuildPhysicsSandboxRenderScene(
+        const StaticSceneModelCollection &models);
 
 class ReplaySimulationSession {
 public:

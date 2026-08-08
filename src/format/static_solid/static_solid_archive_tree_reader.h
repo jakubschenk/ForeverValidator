@@ -12,10 +12,12 @@
 #include "format/static_solid/static_solid_archive_id.h"
 #include "format/static_solid/static_solid_archive_node_ref_reader.h"
 class CGameCtnReplayStaticSolidArchiveByteStream;
+class CGameCtnReplayStaticSolidArchiveNodeGraph;
 struct CGameCtnReplayStaticSolidArchiveCMwIdState;
 struct CGameCtnReplayStaticSolidArchiveDecodeProgress;
 class StaticSolidArchiveLoadSession;
 struct CGameCtnReplayStaticSolidArchiveChunkDispatchContext;
+struct SceneDescriptorFolderPaths;
 
 class CPlugTreeStateArchivePayload {
 public:
@@ -54,7 +56,11 @@ public:
   int ReadMaterialSurfaceGeneratorRefs(
       CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs);
   int ReadSurfaceOnly(CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs);
-  int Install(StaticSolidArchiveLoadSession *store) const;
+  int Install(
+      CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
+      const SceneDescriptorFolderPaths *externalFolders,
+      const char *sourceDescriptorPath,
+      StaticSolidArchiveLoadSession *store) const;
 
 private:
   StaticSolidArchiveId payload = StaticSolidArchiveId::Invalid();

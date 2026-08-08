@@ -31,6 +31,8 @@ public:
             ArchiveNodeReference materialNode,
             ArchiveNodeReference surfaceSourceNode,
             ArchiveNodeReference generatorNode);
+    ArchiveNodeReference ShaderNode() const;
+    ArchiveNodeReference MaterialNode() const;
     ArchiveNodeReference SurfaceSourceNode() const;
 
 private:

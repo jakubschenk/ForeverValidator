@@ -88,7 +88,9 @@ struct InstalledPackAssetRepository::Impl {
     InstalledPackKeyCatalog keyCatalog;
     bool hasKeyCatalog = false;
     std::string packName = "Stadium";
-    CPlugFilePack pack;
+    std::shared_ptr<CPlugFilePack> pack =
+            std::make_shared<CPlugFilePack>();
+    forevervalidator::AssetProvider looseAssetProvider;
     bool packReady = false;
     BlockInfoCatalog catalog;
     bool catalogReady = false;
@@ -141,10 +143,28 @@ std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
         std::size_t pakByteCount,
         const InstalledPackKeyCatalog &keyCatalog,
         const char *packName) {
+    return OpenReplayAssetRepository(
+            pakBytes,
+            pakByteCount,
+            keyCatalog,
+            packName,
+            {});
+}
+
+std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
+        const std::byte *pakBytes,
+        std::size_t pakByteCount,
+        const InstalledPackKeyCatalog &keyCatalog,
+        const char *packName,
+        forevervalidator::AssetProvider looseAssetProvider) {
     try {
         auto repository = std::make_unique<InstalledPackAssetRepository>();
         if (!repository->Configure(
-                    pakBytes, pakByteCount, keyCatalog, packName)) {
+                    pakBytes,
+                    pakByteCount,
+                    keyCatalog,
+                    packName,
+                    std::move(looseAssetProvider))) {
             return {};
         }
         return repository;
@@ -195,6 +215,20 @@ bool InstalledPackAssetRepository::Configure(
         std::size_t pakByteCount,
         const InstalledPackKeyCatalog &keyCatalog,
         const char *packName) {
+    return Configure(
+            pakBytes,
+            pakByteCount,
+            keyCatalog,
+            packName,
+            {});
+}
+
+bool InstalledPackAssetRepository::Configure(
+        const std::byte *pakBytes,
+        std::size_t pakByteCount,
+        const InstalledPackKeyCatalog &keyCatalog,
+        const char *packName,
+        forevervalidator::AssetProvider looseAssetProvider) {
     if (pakBytes == nullptr || pakByteCount == 0u ||
         packName == nullptr || *packName == '\0' ||
         keyCatalog.Find(packName) == nullptr) {
@@ -207,6 +241,7 @@ bool InstalledPackAssetRepository::Configure(
         next->keyCatalog = keyCatalog;
         next->hasKeyCatalog = true;
         next->packName = packName;
+        next->looseAssetProvider = std::move(looseAssetProvider);
         impl_ = std::move(next);
         return true;
     } catch (const std::bad_alloc &) {
@@ -233,12 +268,12 @@ bool InstalledPackAssetRepository::EnsurePack() {
         return true;
     }
     const int opened = impl_->hasKeyCatalog
-            ? impl_->pack.OpenFromMemory(
+            ? impl_->pack->OpenFromMemory(
                     impl_->pakBytes.data(),
                     impl_->pakBytes.size(),
                     impl_->keyCatalog,
                     impl_->packName.c_str())
-            : impl_->pack.OpenFromMemory(
+            : impl_->pack->OpenFromMemory(
                     impl_->pakBytes.data(),
                     impl_->pakBytes.size(),
                     impl_->packlistBytes.data(),
@@ -249,8 +284,9 @@ bool InstalledPackAssetRepository::EnsurePack() {
     }
     impl_->packReady = true;
     impl_->blockInfos = std::make_unique<BlockInfoAssetStore>(
-            impl_->pack, impl_->solidReferences);
-    impl_->materials = std::make_unique<MaterialPackRepository>(impl_->pack);
+            *impl_->pack, impl_->solidReferences);
+    impl_->materials = std::make_unique<MaterialPackRepository>(
+            impl_->pack, impl_->looseAssetProvider);
     return true;
 }
 
@@ -260,14 +296,14 @@ const BlockInfoCatalog *InstalledPackAssetRepository::Catalog() {
     }
     if (!impl_->catalogReady) {
         if (!LoadBlockInfoCatalog(
-                    impl_->pack, *impl_->blockInfos, impl_->catalog)) {
+                    *impl_->pack, *impl_->blockInfos, impl_->catalog)) {
             return nullptr;
         }
         CGameCtnReplayCollectionZoneSources zoneSources;
         if (!zoneSources.LoadFromCatalogCollection(
-                    &impl_->pack, impl_->packName.c_str()) ||
+                    impl_->pack.get(), impl_->packName.c_str()) ||
             !zoneSources.ApplyCollectionLandZoneHeights(
-                    &impl_->pack,
+                    impl_->pack.get(),
                     impl_->packName.c_str(),
                     &impl_->catalog)) {
             impl_->catalog.Clear();
@@ -322,9 +358,9 @@ InstalledPackAssetRepository::Collection(std::string_view name) {
         auto collection = std::make_unique<LoadedCollection>();
         collection->name.assign(name.data(), name.size());
         if (!collection->zoneSources.LoadFromCatalogCollection(
-                    &impl_->pack, collection->name.c_str()) ||
+                    impl_->pack.get(), collection->name.c_str()) ||
             !collection->replacementPairs.LoadCatalogCollection(
-                    &impl_->pack, collection->name.c_str()) ||
+                    impl_->pack.get(), collection->name.c_str()) ||
             collection->replacementPairs.OverflowCount() != 0u) {
             return std::nullopt;
         }
@@ -356,7 +392,7 @@ InstalledPackAssetRepository::Collection(std::string_view name) {
         if (collection->zoneSources.HasWaterDefinition()) {
             CatalogCollectionWaterDefinition water;
             if (!collection->zoneSources.BuildWaterDefinition(
-                        &impl_->pack,
+                        impl_->pack.get(),
                         collection->name.c_str(),
                         &water)) {
                 return std::nullopt;
@@ -382,7 +418,7 @@ InstalledPackAssetRepository::DecorationSize(
             return loaded.definition;
         }
     }
-    const auto decoded = ResolveReplayDecorationSize(impl_->pack, mapInput);
+    const auto decoded = ResolveReplayDecorationSize(*impl_->pack, mapInput);
     if (!decoded) {
         return std::nullopt;
     }
@@ -435,7 +471,7 @@ InstalledPackAssetRepository::ResolveMaterialPath(std::string_view plainPath) {
 
 const CPlugFilePack *InstalledPackAssetRepositoryAccess::Pack(
         InstalledPackAssetRepository &repository) {
-    return repository.EnsurePack() ? &repository.impl_->pack : nullptr;
+    return repository.EnsurePack() ? repository.impl_->pack.get() : nullptr;
 }
 
 StaticSolidArchiveReferenceCatalog &
