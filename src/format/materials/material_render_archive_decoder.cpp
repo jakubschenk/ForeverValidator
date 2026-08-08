@@ -88,6 +88,14 @@ public:
         return true;
     }
 
+    bool PeekU32(u32 *out) const {
+        if (out == nullptr || Remaining() < 4u) {
+            return false;
+        }
+        *out = TmnfFormat::ArchiveBinary::ReadU32LE(bytes_ + offset_);
+        return true;
+    }
+
     bool ReadU8(unsigned char *out) {
         if (out == nullptr || Remaining() == 0u) {
             return false;
@@ -430,9 +438,13 @@ void ResolveBitmapImageReference(
                 out->imagePlainPath.c_str(),
                 selectedPath,
                 sizeof(selectedPath))) {
-        out->imageDiagnostic =
-                "CPlugBitmap image is not present in the installed pack: " +
-                out->imagePlainPath;
+        // TMUF keeps many authored DDS/TGA files loose under GameData while
+        // their CPlugBitmap wrappers live in the pack. Preserve the logical
+        // path so the retained asset provider can resolve that loose file.
+        out->imageSelectedPath = out->imagePlainPath;
+        out->imageClassId = 0u;
+        out->imageEncodedByteCount = 0u;
+        out->imageDiagnostic.clear();
         return;
     }
     const CPlugFileFidContainer_SFileDesc *descriptor =
@@ -542,9 +554,14 @@ bool ParseCPlugBitmap(const unsigned char *bytes,
                 externalImage = candidateImage;
             }
             hasInlineImage = hasInlineImage || hasInlineImageNode;
+            u32 nextWord = 0u;
+            const bool hasOptionalExternalRenderNode =
+                    candidateImage != nullptr && cursor.PeekU32(&nextWord) &&
+                    (nextWord == UINT32_MAX ||
+                     (nextWord != 0u && nextWord <= references.nodeCount));
             if ((chunk == CPlugBitmapChunkImage18 ||
                  chunk == CPlugBitmapChunkImage22) &&
-                (hasInlineImageNode || candidateImage != nullptr)) {
+                (hasInlineImageNode || hasOptionalExternalRenderNode)) {
                 u32 candidateRenderClassId = 0u;
                 if (!ParseBitmapRenderNodeReference(
                             cursor, references, &candidateRenderClassId) ||

@@ -4,6 +4,8 @@
 #include <optional>
 #include <string_view>
 
+#include <forevervalidator/validation.h>
+
 #include "engine/game/material_definition.h"
 struct CPlugFilePack;
 
@@ -12,6 +14,9 @@ public:
     explicit MaterialPackRepository(CPlugFilePack &pack);
     explicit MaterialPackRepository(
             std::shared_ptr<const CPlugFilePack> pack);
+    MaterialPackRepository(
+            std::shared_ptr<const CPlugFilePack> pack,
+            forevervalidator::AssetProvider looseAssetProvider);
     ~MaterialPackRepository();
 
     MaterialPackRepository(const MaterialPackRepository &) = delete;

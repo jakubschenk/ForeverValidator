@@ -1,4 +1,5 @@
 #include "format/materials/material_pack_repository.h"
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -26,9 +27,11 @@ MaterialTextureAssetSourceResult TextureSourceFailure(
 class PackMaterialTextureAssetSource final
         : public MaterialTextureAssetSource {
 public:
-    explicit PackMaterialTextureAssetSource(
-            std::shared_ptr<const CPlugFilePack> pack)
+    PackMaterialTextureAssetSource(
+            std::shared_ptr<const CPlugFilePack> pack,
+            forevervalidator::AssetProvider looseAssetProvider)
             : pack_(std::move(pack)),
+              looseAssetProvider_(std::move(looseAssetProvider)),
               stableNamespace_(pack_ ? pack_->PackName() : std::string{}) {}
 
     std::string_view StableNamespace(void) const noexcept override {
@@ -52,11 +55,60 @@ public:
             const std::string path(selectedPath);
             const CPlugFileFidContainer_SFileDesc *descriptor =
                     pack_->FindFileDescByPath(path.c_str());
-            if (descriptor == nullptr) {
+            if (descriptor == nullptr && !looseAssetProvider_) {
                 return TextureSourceFailure(
                         MaterialTextureAssetSourceErrorCode::SourceNotFound,
                         "texture is not present in installed pack '" +
                                 stableNamespace_ + "': " + path);
+            }
+            if (descriptor == nullptr) {
+                forevervalidator::AssetRequest request;
+                request.logicalIdentifier = path;
+                std::replace(request.logicalIdentifier.begin(),
+                             request.logicalIdentifier.end(),
+                             '\\', '/');
+                forevervalidator::Result<forevervalidator::AssetBytes> loose =
+                        looseAssetProvider_(request);
+                if (loose) {
+                    return MaterialTextureAssetSourceResult::Success(
+                            std::move(loose).Value());
+                }
+                forevervalidator::ValidationError error =
+                        std::move(loose).Error();
+                MaterialTextureAssetSourceErrorCode code =
+                        MaterialTextureAssetSourceErrorCode::ExtractionFailed;
+                if (error.code ==
+                    forevervalidator::ValidationErrorCode::AllocationFailed) {
+                    code = MaterialTextureAssetSourceErrorCode::
+                            AllocationFailed;
+                } else if (
+                        error.code == forevervalidator::ValidationErrorCode::
+                                              AssetSourceUnavailable) {
+                    code = MaterialTextureAssetSourceErrorCode::
+                            SourceUnavailable;
+                } else if (
+                        error.code == forevervalidator::ValidationErrorCode::
+                                              AssetLoadingFailed &&
+                        (error.reason == forevervalidator::
+                                                 ValidationFailureReason::
+                                                         RequiredAssetMissing ||
+                         error.reason == forevervalidator::
+                                                 ValidationFailureReason::
+                                                         InstalledPackMissing ||
+                         error.reason == forevervalidator::
+                                                 ValidationFailureReason::
+                                                         StadiumPackMissing ||
+                         error.reason == forevervalidator::
+                                                 ValidationFailureReason::
+                                                         PacklistMissing)) {
+                    code = MaterialTextureAssetSourceErrorCode::SourceNotFound;
+                }
+                if (error.diagnostic.empty()) {
+                    error.diagnostic =
+                            "loose texture provider could not read: " + path;
+                }
+                return TextureSourceFailure(
+                        code, std::move(error.diagnostic));
             }
             ByteBuffer bytes;
             if (!pack_->ExtractPath(path.c_str(), &bytes) || bytes.Empty()) {
@@ -92,6 +144,7 @@ public:
 
 private:
     std::shared_ptr<const CPlugFilePack> pack_;
+    forevervalidator::AssetProvider looseAssetProvider_;
     std::string stableNamespace_;
 };
 
@@ -139,12 +192,14 @@ bool ExtractMaterialBytes(const CPlugFilePack &pack,
 struct MaterialPackRepository::Impl {
     explicit Impl(CPlugFilePack &sourcePack) : pack(&sourcePack) {}
 
-    explicit Impl(std::shared_ptr<const CPlugFilePack> sourcePack)
+    Impl(std::shared_ptr<const CPlugFilePack> sourcePack,
+         forevervalidator::AssetProvider looseAssetProvider)
             : ownedPack(std::move(sourcePack)),
               pack(ownedPack.get()),
               textureSource(
                       std::make_shared<PackMaterialTextureAssetSource>(
-                              ownedPack)) {}
+                              ownedPack,
+                              std::move(looseAssetProvider))) {}
 
     std::shared_ptr<const CPlugFilePack> ownedPack;
     const CPlugFilePack *pack = nullptr;
@@ -199,7 +254,13 @@ MaterialPackRepository::MaterialPackRepository(CPlugFilePack &pack)
 
 MaterialPackRepository::MaterialPackRepository(
         std::shared_ptr<const CPlugFilePack> pack)
-        : impl_(std::make_unique<Impl>(std::move(pack))) {}
+        : MaterialPackRepository(std::move(pack), {}) {}
+
+MaterialPackRepository::MaterialPackRepository(
+        std::shared_ptr<const CPlugFilePack> pack,
+        forevervalidator::AssetProvider looseAssetProvider)
+        : impl_(std::make_unique<Impl>(
+                  std::move(pack), std::move(looseAssetProvider))) {}
 
 MaterialPackRepository::~MaterialPackRepository() = default;
 

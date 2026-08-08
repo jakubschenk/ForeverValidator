@@ -2,7 +2,7 @@
 
 ## Summary
 
-This change carries external `CPlugBitmap` image references through material decoding and exposes their original encoded bytes through each experimental physics-sandbox render scene. It also removes the water-only material-render gate so ordinary Stadium materials retain their model, shader, sampler, and texture bindings.
+This change carries external `CPlugBitmap` image references through material decoding and exposes their original encoded bytes through each experimental physics-sandbox render scene. It also removes the water-only material-render gate so ordinary Stadium materials retain their model, shader, sampler, and texture bindings. Packed bitmap wrappers can resolve authored image files from the installation's sibling `GameData` tree while retaining `Packs` precedence.
 
 ## Public API
 
@@ -18,9 +18,10 @@ The installed pack is shared through the material repository, texture source, an
 ## Validation
 
 - Clang/Windows CPU build completed successfully.
-- `ctest --test-dir build/cpu-texture-clang -C RelWithDebInfo --output-on-failure`: 12/12 tests passed.
-- A real Stadium replay produced 430 render materials, 3,625 bitmap bindings, and 8 unique texture assets; all 8 encoded payloads were read successfully.
-- Unit coverage verifies deterministic IDs, case-insensitive deduplication, lazy loading, cache reuse, retained source lifetime, typed unknown-ID/extraction failures, and invalid-resolver behavior.
+- `ctest --test-dir build/cpu-texture-clang -C RelWithDebInfo --output-on-failure`: 13/13 tests passed.
+- A real Stadium replay produced 430 render materials, 3,625 bitmap bindings, 3,227 referenced bindings, and 133 unique texture assets; all 133 encoded payloads (70,940,264 bytes) were read successfully.
+- Its primary shader inputs were fully resolved: Diffuse 382/382, Normal 381/381, Specular 382/382, Blend1/Blend2/BlendI 18/18 each, and Advert 17/17.
+- Unit coverage verifies deterministic IDs, case-insensitive deduplication, lazy loading, cache reuse, retained source lifetime, typed unknown-ID/extraction failures, invalid-resolver behavior, sibling `GameData` discovery/fallback, `Packs` precedence, and path confinement.
 
 ## Known limitations
 
@@ -28,4 +29,3 @@ The installed pack is shared through the material repository, texture source, an
 - Inline/generated images and bitmap archives that cannot be extracted or decoded expose diagnostics and no asset ID; they no longer discard an otherwise usable material graph.
 - The material decoder still scopes `CMwId` dictionary state more narrowly than the file-global GBX dictionary, so rare shared-ID shader variants may be skipped.
 - Internal requirement nodes, repeated/null/external bitmap-address entries, and non-water inline bitmap-render node classes are not yet decoded.
-- Some `Stadium\Media\Texture\Image\*.dds` references can still miss pack path selection/routing even when shader parsing succeeds.

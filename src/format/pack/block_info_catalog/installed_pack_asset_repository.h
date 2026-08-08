@@ -31,6 +31,11 @@ public:
                    std::size_t pakByteCount,
                    const InstalledPackKeyCatalog &keyCatalog,
                    const char *packName);
+    bool Configure(const std::byte *pakBytes,
+                   std::size_t pakByteCount,
+                   const InstalledPackKeyCatalog &keyCatalog,
+                   const char *packName,
+                   forevervalidator::AssetProvider looseAssetProvider);
     void Clear();
     bool IsConfigured() const;
 
