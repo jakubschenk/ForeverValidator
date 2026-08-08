@@ -17,6 +17,16 @@ set(FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS "1" CACHE STRING
 set(FOREVERVALIDATOR_CUDA_SEARCH_PREBUILT_OBJECT "" CACHE FILEPATH
     "Exact prebuilt cuda_search_executor object for release/CI reuse")
 
+set(FOREVERVALIDATOR_USING_DEFAULT_CUDA_ARCHITECTURES OFF)
+if(FOREVERVALIDATOR_ENABLE_CUDA AND
+   NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    # Emit a Pascal cubin plus forward-compatible compute_61 PTX. Release
+    # packaging can override this compact generic default with its complete
+    # native architecture matrix.
+    set(CMAKE_CUDA_ARCHITECTURES "61")
+    set(FOREVERVALIDATOR_USING_DEFAULT_CUDA_ARCHITECTURES ON)
+endif()
+
 if(FOREVERVALIDATOR_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
@@ -219,16 +229,9 @@ if(FOREVERVALIDATOR_ENABLE_CUDA)
         CUDA_STANDARD_REQUIRED ON
         CUDA_EXTENSIONS OFF
         CUDA_SEPARABLE_COMPILATION OFF)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
-            set_property(TARGET forevervalidator_core PROPERTY
-                CUDA_ARCHITECTURES native)
-        else()
-            set_property(TARGET forevervalidator_core PROPERTY
-                CUDA_ARCHITECTURES "75-real;80-real;86")
-        endif()
-    endif()
-    message(STATUS "ForeverValidator CUDA backend enabled")
+    message(STATUS
+        "ForeverValidator CUDA backend enabled for architectures: "
+        "${CMAKE_CUDA_ARCHITECTURES}")
 else()
     message(STATUS
         "ForeverValidator CUDA backend disabled "
@@ -621,6 +624,43 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
              COMMAND forevervalidator-cuda-static-configuration-tests)
 
     if(FOREVERVALIDATOR_ENABLE_CUDA)
+        if(FOREVERVALIDATOR_USING_DEFAULT_CUDA_ARCHITECTURES)
+            find_program(FOREVERVALIDATOR_CUOBJDUMP_EXECUTABLE
+                NAMES cuobjdump
+                HINTS "${CUDAToolkit_BIN_DIR}"
+                REQUIRED)
+            add_executable(forevervalidator-cuda-default-architecture-probe
+                tests/cuda_default_architecture_probe.cpp)
+            target_include_directories(
+                forevervalidator-cuda-default-architecture-probe PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/src")
+            target_link_libraries(
+                forevervalidator-cuda-default-architecture-probe PRIVATE
+                forevervalidator_core)
+            forevervalidator_configure_target(
+                forevervalidator-cuda-default-architecture-probe)
+            add_executable(forevervalidator-cuobjdump-failure-probe
+                tests/cuobjdump_failure_probe.cpp)
+            forevervalidator_configure_target(
+                forevervalidator-cuobjdump-failure-probe)
+            add_test(NAME forevervalidator-cuda-default-sm61-artifact
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DCUOBJDUMP=${FOREVERVALIDATOR_CUOBJDUMP_EXECUTABLE}"
+                    "-DARTIFACT=$<TARGET_FILE:forevervalidator-cuda-default-architecture-probe>"
+                    "-DMEMBER=forevervalidator-cuda-default-architecture-probe"
+                    "-DARCHITECTURE=sm_61"
+                    -P
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/verify_cuda_architecture.cmake")
+            add_test(NAME forevervalidator-cuda-artifact-verifier-failure
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DCMAKE_COMMAND_PATH=${CMAKE_COMMAND}"
+                    "-DVERIFIER=${CMAKE_CURRENT_SOURCE_DIR}/cmake/verify_cuda_architecture.cmake"
+                    "-DCUOBJDUMP=$<TARGET_FILE:forevervalidator-cuobjdump-failure-probe>"
+                    "-DARTIFACT=$<TARGET_FILE:forevervalidator-cuda-default-architecture-probe>"
+                    -P
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_cuda_architecture_verifier_failure.cmake")
+        endif()
+
         add_executable(forevervalidator-cuda-arithmetic-tests
             tests/cuda_arithmetic_tests.cpp)
         target_include_directories(
