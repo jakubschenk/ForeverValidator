@@ -70,6 +70,9 @@ int CGameCtnReplayStaticSolidArchiveNodeGraph::Node::MarkExternal(
         u32 newLoadable,
         u32 newFolderIndex,
         const std::string &newName) {
+    if (newName.find('\0') != std::string::npos) {
+        return 0;
+    }
     present = 1u;
     external = 1u;
     loadable = newLoadable;
