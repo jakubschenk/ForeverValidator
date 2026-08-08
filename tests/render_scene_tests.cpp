@@ -1,17 +1,21 @@
 #include <forevervalidator/experimental/physics_sandbox.h>
 
 #include "engine/game/game_ctn_block_info.h"
+#include "engine/game/material_render_definition.h"
+#include "engine/game/material_texture_asset_source.h"
 #include "engine/rendering/plug_tree.h"
 #include "engine/scene/static_scene_model.h"
 #include "format/static_solid/static_solid_geometry_decoder.h"
 #include "simulation/replay/replay_scene_surface_resolution.h"
 #include "simulation/runtime/replay_simulation_session.h"
+#include "simulation/runtime/physics_sandbox_texture_assets.h"
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <new>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -77,6 +81,63 @@ public:
 private:
     BlockInfoAssetHandle sourceAsset_;
     CMwNodRef<CGameCtnBlockInfoClip> sourceClip_;
+};
+
+class TestTextureSource final : public MaterialTextureAssetSource {
+public:
+    TestTextureSource(std::string sourceName,
+                      std::string expectedPath,
+                      std::vector<std::byte> bytes,
+                      bool fail = false)
+            : sourceName_(std::move(sourceName)),
+              expectedPath_(std::move(expectedPath)),
+              bytes_(std::move(bytes)),
+              fail_(fail) {}
+
+    std::string_view StableNamespace(void) const noexcept override {
+        return sourceName_;
+    }
+
+    MaterialTextureAssetSourceResult ReadEncodedBytes(
+            std::string_view selectedPath) const noexcept override {
+        ++readCount_;
+        try {
+            if (selectedPath != expectedPath_) {
+                MaterialTextureAssetSourceError error;
+                error.code =
+                        MaterialTextureAssetSourceErrorCode::SourceNotFound;
+                error.diagnostic = "test texture path was not found";
+                return MaterialTextureAssetSourceResult::Failure(
+                        std::move(error));
+            }
+            if (fail_) {
+                MaterialTextureAssetSourceError error;
+                error.code =
+                        MaterialTextureAssetSourceErrorCode::ExtractionFailed;
+                error.diagnostic =
+                        "test texture extraction failed for " +
+                        expectedPath_;
+                return MaterialTextureAssetSourceResult::Failure(
+                        std::move(error));
+            }
+            return MaterialTextureAssetSourceResult::Success(bytes_);
+        } catch (const std::bad_alloc &) {
+            MaterialTextureAssetSourceError error;
+            error.code =
+                    MaterialTextureAssetSourceErrorCode::AllocationFailed;
+            return MaterialTextureAssetSourceResult::Failure(
+                    std::move(error));
+        }
+    }
+
+    std::uint32_t ReadCount(void) const noexcept { return readCount_; }
+
+private:
+    std::string sourceName_;
+    std::string expectedPath_;
+    std::vector<std::byte> bytes_;
+    bool fail_ = false;
+    mutable std::uint32_t readCount_ = 0u;
 };
 
 void AppendFloat(std::vector<std::uint8_t> *bytes, float value) {
@@ -218,6 +279,125 @@ bool TestProvenanceAndImmutableScene() {
     return okay;
 }
 
+bool TestLazyTextureAssetResolver() {
+    using forevervalidator::experimental::
+            PhysicsSandboxTextureAssetEncoding;
+    using forevervalidator::experimental::
+            PhysicsSandboxTextureAssetErrorCode;
+    using forevervalidator::experimental::texture_assets_internal::
+            PhysicsSandboxTextureAssetRegistry;
+
+    constexpr const char *TexturePath =
+            "Stadium\\Media\\Texture\\RoadDiffuse.DDS";
+    const std::vector<std::byte> expected{
+            std::byte{0x44}, std::byte{0x44},
+            std::byte{0x53}, std::byte{0x20}};
+    auto source = std::make_shared<TestTextureSource>(
+            "Stadium", TexturePath, expected);
+    std::weak_ptr<TestTextureSource> retainedSource = source;
+
+    MaterialRenderBitmapDefinition bitmap;
+    bitmap.imagePlainPath = TexturePath;
+    bitmap.imageSelectedPath = TexturePath;
+    bitmap.imageEncodedByteCount = expected.size();
+    bitmap.imageSource = source;
+
+    PhysicsSandboxTextureAssetRegistry registry;
+    std::string diagnostic;
+    const auto id = registry.Add(bitmap, &diagnostic);
+    MaterialRenderBitmapDefinition duplicate = bitmap;
+    duplicate.imagePlainPath =
+            "stadium\\media\\texture\\roaddiffuse.dds";
+    duplicate.imageSelectedPath =
+            "stadium\\media\\texture\\roaddiffuse.dds";
+    const auto duplicateId = registry.Add(duplicate, &diagnostic);
+
+    MaterialRenderBitmapDefinition other = bitmap;
+    other.imageSelectedPath =
+            "Stadium\\Media\\Texture\\RoadNormal.dds";
+    const auto otherId = registry.Add(other, &diagnostic);
+    auto resolver = std::move(registry).Build();
+
+    bitmap.imageSource.reset();
+    duplicate.imageSource.reset();
+    other.imageSource.reset();
+    source.reset();
+
+    bool okay = Check(
+            id != 0u && duplicateId == id && otherId != id &&
+                    resolver.Assets().size() == 2u && diagnostic.empty(),
+            "texture assets were not deterministically deduplicated");
+    okay &= Check(
+            !retainedSource.expired(),
+            "texture resolver did not retain its encoded-byte source");
+    okay &= Check(
+            resolver.Assets()[0].id == id &&
+                    resolver.Assets()[0].logicalPath == TexturePath &&
+                    resolver.Assets()[0].sourcePath == TexturePath &&
+                    resolver.Assets()[0].sourceName == "Stadium" &&
+                    resolver.Assets()[0].encoding ==
+                            PhysicsSandboxTextureAssetEncoding::Dds &&
+                    resolver.Assets()[0].mediaType == "image/vnd-ms.dds" &&
+                    resolver.Assets()[0].encodedByteCount == expected.size(),
+            "texture metadata did not preserve the decoded image reference");
+
+    const auto firstRead = resolver.Read(id);
+    const auto secondRead = resolver.Read(id);
+    okay &= Check(
+            firstRead && secondRead &&
+                    firstRead.Value()->encodedBytes == expected &&
+                    firstRead.Value().get() == secondRead.Value().get() &&
+                    retainedSource.lock()->ReadCount() == 1u,
+            "texture bytes were not loaded lazily and cached");
+
+    const auto unknown = resolver.Read(UINT64_C(0xffffffffffffffff));
+    okay &= Check(
+            !unknown &&
+                    unknown.Error().code ==
+                            PhysicsSandboxTextureAssetErrorCode::UnknownAsset &&
+                    !unknown.Error().diagnostic.empty(),
+            "unknown texture ID did not return an actionable error");
+
+    PhysicsSandboxTextureAssetRegistry stableRegistry;
+    MaterialRenderBitmapDefinition stableBitmap;
+    stableBitmap.imagePlainPath = TexturePath;
+    stableBitmap.imageSelectedPath = TexturePath;
+    stableBitmap.imageEncodedByteCount = expected.size();
+    stableBitmap.imageSource = std::make_shared<TestTextureSource>(
+            "Stadium", TexturePath, expected);
+    okay &= Check(
+            stableRegistry.Add(stableBitmap) == id,
+            "texture asset ID changed across equivalent registries");
+
+    auto failingSource = std::make_shared<TestTextureSource>(
+            "Stadium", TexturePath, expected, true);
+    PhysicsSandboxTextureAssetRegistry failingRegistry;
+    stableBitmap.imageSource = failingSource;
+    const auto failingId = failingRegistry.Add(stableBitmap);
+    auto failingResolver = std::move(failingRegistry).Build();
+    const auto failedRead = failingResolver.Read(failingId);
+    const auto repeatedFailure = failingResolver.Read(failingId);
+    okay &= Check(
+            !failedRead && !repeatedFailure &&
+                    failedRead.Error().code ==
+                            PhysicsSandboxTextureAssetErrorCode::
+                                    ExtractionFailed &&
+                    failedRead.Error().sourcePath == TexturePath &&
+                    !failedRead.Error().diagnostic.empty() &&
+                    failingSource->ReadCount() == 1u,
+            "texture extraction error was not actionable or cached");
+
+    forevervalidator::experimental::PhysicsSandboxTextureAssetResolver empty;
+    const auto invalid = empty.Read(id);
+    okay &= Check(
+            empty.Assets().empty() && !invalid &&
+                    invalid.Error().code ==
+                            PhysicsSandboxTextureAssetErrorCode::
+                                    InvalidResolver,
+            "empty texture resolver did not report its state");
+    return okay;
+}
+
 bool TestGenericBackgroundLayerClassification() {
     using forevervalidator::experimental::PhysicsSandboxRenderInstance;
     using forevervalidator::experimental::PhysicsSandboxRenderLayer;
@@ -321,6 +501,7 @@ int main() {
     bool okay = TestUvDecoding();
     okay &= TestTransformComposition();
     okay &= TestProvenanceAndImmutableScene();
+    okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();
     return okay ? 0 : 1;

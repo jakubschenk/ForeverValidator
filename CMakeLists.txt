@@ -563,6 +563,19 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
     add_test(NAME forevervalidator-race-camera-pack
              COMMAND forevervalidator-race-camera-pack-tests)
 
+    add_executable(forevervalidator-installed-pack-asset-source-tests
+        tests/installed_pack_asset_source_tests.cpp)
+    target_include_directories(
+        forevervalidator-installed-pack-asset-source-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(
+        forevervalidator-installed-pack-asset-source-tests PRIVATE
+        forevervalidator_native)
+    forevervalidator_configure_target(
+        forevervalidator-installed-pack-asset-source-tests)
+    add_test(NAME forevervalidator-installed-pack-asset-source
+             COMMAND forevervalidator-installed-pack-asset-source-tests)
+
     add_executable(forevervalidator-finish-time-tests
         tests/replay_finish_time_estimator_tests.cpp)
     target_include_directories(forevervalidator-finish-time-tests PRIVATE
