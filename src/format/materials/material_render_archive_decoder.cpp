@@ -70,8 +70,6 @@ constexpr u32 CPlugShaderApplyChunkFields08 = 0x09026008u;
 constexpr u32 CPlugShaderPassChunkBitmapSamplers = 0x09067006u;
 constexpr u32 CPlugShaderPassChunkRenderState = 0x09067007u;
 constexpr u32 CPlugShaderPassChunkPipelines = 0x0906700au;
-constexpr u32 CPlugShaderWaterFlagsMask = 0x00c00000u;
-constexpr u32 CPlugShaderWaterFlagsValue = 0x00800000u;
 constexpr u32 SkipBlockMarker = 0x534b4950u;
 constexpr u32 MaxArchiveArrayCount = 0x100000u;
 constexpr u32 MaxArchiveStringBytes = 0x10000u;
@@ -368,14 +366,16 @@ bool ParseCPlugBitmapRenderWater(ArchiveCursor &cursor,
 }
 
 bool ParseBitmapNodeReference(ArchiveCursor &cursor,
-                              const GbxBodyReferenceTable &references,
-                              bool *inlineImageOut) {
+                               const GbxBodyReferenceTable &references,
+                               bool *inlineImageOut,
+                               const GbxBodyExternalReference **externalOut) {
     NodeReference image;
-    if (inlineImageOut == nullptr ||
+    if (inlineImageOut == nullptr || externalOut == nullptr ||
         !ReadNodeReference(cursor, references, &image)) {
         return false;
     }
     *inlineImageOut = !image.IsNull() && !image.IsExternal();
+    *externalOut = image.external;
     if (image.IsNull() || image.IsExternal()) {
         return true;
     }
@@ -409,12 +409,54 @@ bool ParseBitmapRenderNodeReference(ArchiveCursor &cursor,
     return true;
 }
 
+void ResolveBitmapImageReference(
+        const CPlugFilePack &pack,
+        const GbxBodyReferenceTable &references,
+        const char *bitmapPlainPath,
+        const GbxBodyExternalReference &reference,
+        MaterialRenderBitmapDefinition *out) {
+    std::string plainPath;
+    if (!references.ResolvePlainPathForReference(
+                bitmapPlainPath, reference, &plainPath)) {
+        out->imageDiagnostic =
+                "CPlugBitmap image reference could not be resolved relative "
+                "to " + std::string(bitmapPlainPath);
+        return;
+    }
+    out->imagePlainPath = std::move(plainPath);
+
+    char selectedPath[512]{};
+    if (!pack.SelectedPathForPlainRef(
+                out->imagePlainPath.c_str(),
+                selectedPath,
+                sizeof(selectedPath))) {
+        out->imageDiagnostic =
+                "CPlugBitmap image is not present in the installed pack: " +
+                out->imagePlainPath;
+        return;
+    }
+    const CPlugFileFidContainer_SFileDesc *descriptor =
+            pack.FindFileDescByPath(selectedPath);
+    if (descriptor == nullptr) {
+        out->imageDiagnostic =
+                "CPlugBitmap image selected an unavailable pack path: " +
+                std::string(selectedPath);
+        return;
+    }
+    out->imageSelectedPath = selectedPath;
+    out->imageClassId = descriptor->classId;
+    out->imageEncodedByteCount = descriptor->uncompressedSize;
+    out->imageDiagnostic.clear();
+}
+
 bool ParseCPlugBitmap(const unsigned char *bytes,
                       u32 byteCount,
-                      u32 *renderClassIdOut) {
+                      const CPlugFilePack &pack,
+                      const char *bitmapPlainPath,
+                      MaterialRenderBitmapDefinition *out) {
     u32 classId = 0u;
     GbxBodyReferenceTable references;
-    if (bytes == nullptr || renderClassIdOut == nullptr ||
+    if (bytes == nullptr || bitmapPlainPath == nullptr || out == nullptr ||
         !GbxBodyOffsetReader::TryParseWithReferences(
                 bytes, byteCount, &classId, &references) ||
         classId != TMNF_CLASS_CPlugBitmap) {
@@ -422,6 +464,8 @@ bool ParseCPlugBitmap(const unsigned char *bytes,
     }
     ArchiveCursor cursor(bytes, byteCount, references.bodyOffset);
     u32 renderClassId = 0u;
+    const GbxBodyExternalReference *externalImage = nullptr;
+    bool hasInlineImage = false;
     for (;;) {
         u32 chunk = 0u;
         if (!cursor.ReadU32(&chunk)) {
@@ -431,7 +475,19 @@ bool ParseCPlugBitmap(const unsigned char *bytes,
             if (cursor.Remaining() != 0u) {
                 return false;
             }
-            *renderClassIdOut = renderClassId;
+            out->renderClassId = renderClassId;
+            if (externalImage != nullptr) {
+                ResolveBitmapImageReference(
+                        pack,
+                        references,
+                        bitmapPlainPath,
+                        *externalImage,
+                        out);
+            } else if (hasInlineImage) {
+                out->imageDiagnostic =
+                        "CPlugBitmap embeds a generated image; encoded "
+                        "external image bytes are unavailable";
+            }
             return true;
         }
         switch (chunk) {
@@ -473,13 +529,22 @@ bool ParseCPlugBitmap(const unsigned char *bytes,
         case CPlugBitmapChunkImage15:
         case CPlugBitmapChunkImage18:
         case CPlugBitmapChunkImage22: {
-            bool hasImage = false;
-            if (!ParseBitmapNodeReference(cursor, references, &hasImage) ||
+            bool hasInlineImageNode = false;
+            const GbxBodyExternalReference *candidateImage = nullptr;
+            if (!ParseBitmapNodeReference(cursor,
+                                          references,
+                                          &hasInlineImageNode,
+                                          &candidateImage) ||
                 !cursor.Skip(24u)) {
                 return false;
             }
+            if (candidateImage != nullptr) {
+                externalImage = candidateImage;
+            }
+            hasInlineImage = hasInlineImage || hasInlineImageNode;
             if ((chunk == CPlugBitmapChunkImage18 ||
-                 chunk == CPlugBitmapChunkImage22) && hasImage) {
+                 chunk == CPlugBitmapChunkImage22) &&
+                (hasInlineImageNode || candidateImage != nullptr)) {
                 u32 candidateRenderClassId = 0u;
                 if (!ParseBitmapRenderNodeReference(
                             cursor, references, &candidateRenderClassId) ||
@@ -538,22 +603,39 @@ bool DecodeExternalBitmap(
         descriptor->classId != TMNF_CLASS_CPlugBitmap) {
         return false;
     }
-    ByteBuffer bitmapBytes;
-    u32 renderClassId = 0u;
-    if (!pack.ExtractPathWithStreamFeedbackStrict(
-                selectedPath, &bitmapBytes) ||
-        bitmapBytes.Empty() || bitmapBytes.Size() > UINT32_MAX ||
-        !ParseCPlugBitmap(bitmapBytes.Data(),
-                          static_cast<u32>(bitmapBytes.Size()),
-                          &renderClassId)) {
-        return false;
-    }
     MaterialRenderBitmapDefinition bitmap;
     bitmap.samplerName = std::move(samplerName);
     bitmap.plainPath = std::move(plainPath);
     bitmap.selectedPath = selectedPath;
     bitmap.bitmapClassId = descriptor->classId;
-    bitmap.renderClassId = renderClassId;
+    ByteBuffer bitmapBytes;
+    const bool extracted = pack.ExtractPathWithStreamFeedbackStrict(
+            selectedPath, &bitmapBytes);
+    const bool parsed = extracted && !bitmapBytes.Empty() &&
+            bitmapBytes.Size() <= UINT32_MAX &&
+            ParseCPlugBitmap(bitmapBytes.Data(),
+                             static_cast<u32>(bitmapBytes.Size()),
+                             pack,
+                             bitmap.plainPath.c_str(),
+                             &bitmap);
+    if (!parsed) {
+        if (!extracted) {
+            bitmap.imageDiagnostic =
+                    "CPlugBitmap archive could not be extracted from the "
+                    "installed pack: " + bitmap.selectedPath;
+        } else if (bitmapBytes.Empty()) {
+            bitmap.imageDiagnostic =
+                    "CPlugBitmap archive is empty: " + bitmap.selectedPath;
+        } else if (bitmapBytes.Size() > UINT32_MAX) {
+            bitmap.imageDiagnostic =
+                    "CPlugBitmap archive is too large to decode: " +
+                    bitmap.selectedPath;
+        } else {
+            bitmap.imageDiagnostic =
+                    "CPlugBitmap archive format is unsupported; its encoded "
+                    "image reference is unavailable: " + bitmap.plainPath;
+        }
+    }
     *out = std::move(bitmap);
     return true;
 }
@@ -831,19 +913,22 @@ bool ParseCPlugBitmapAddress(
     if (!cursor.ReadU32(&chunk) ||
         chunk != CPlugBitmapSamplerChunkState08 ||
         !ids.ReadText(cursor, &out->samplerName) ||
-        out->samplerName.empty() ||
         !ReadNodeReference(cursor, references, &bitmap) ||
         bitmap.IsNull() || !bitmap.IsExternal() ||
         !cursor.Skip(8u) ||
         !cursor.ReadU32(&chunk) ||
-        chunk != CPlugBitmapAddressChunkState07 ||
-        !cursor.Skip(4u) ||
-        !ReadExternalOrNullNodeReference(cursor, references)) {
+        chunk != CPlugBitmapAddressChunkState07) {
         return false;
     }
-    unsigned char hasTransform = 0u;
-    if (!cursor.ReadU8(&hasTransform) || hasTransform > 1u ||
-        (hasTransform != 0u && !cursor.Skip(24u)) ||
+    // State07 stores two opaque words followed by a UV transform variant.
+    // It is not a node reference even though the second word is commonly 0.
+    if (!cursor.Skip(8u)) {
+        return false;
+    }
+    unsigned char transformKind = 0u;
+    if (!cursor.ReadU8(&transformKind) || transformKind > 2u ||
+        (transformKind == 1u && !cursor.Skip(24u)) ||
+        (transformKind == 2u && !cursor.Skip(64u)) ||
         !cursor.ReadU32(&chunk) ||
         chunk != CPlugBitmapAddressChunkState09 ||
         !cursor.Skip(4u) ||
@@ -1128,7 +1213,7 @@ struct MaterialModelDeviceShader {
     const GbxBodyExternalReference *shader = nullptr;
 };
 
-bool DecodeMaterialModelWaterGraph(
+bool DecodeMaterialModelRenderGraph(
         const CPlugFilePack &pack,
         const char *modelPlainPath,
         const char *modelSelectedPath,
@@ -1294,19 +1379,6 @@ bool DecodeMaterialModelWaterGraph(
                                     &graph)) {
             return false;
         }
-        const bool waterFlags =
-                (graph.archiveFlags & CPlugShaderWaterFlagsMask) ==
-                CPlugShaderWaterFlagsValue;
-        const bool waterBitmap = std::any_of(
-                graph.bitmaps.begin(),
-                graph.bitmaps.end(),
-                [](const MaterialRenderBitmapDefinition &bitmap) {
-                    return bitmap.renderClassId ==
-                           TMNF_CLASS_CPlugBitmapRenderWater;
-                });
-        if (!waterFlags || !waterBitmap) {
-            return false;
-        }
         try {
             definition->SetShaderPaths(
                     std::move(shaderPlainPath),
@@ -1341,7 +1413,7 @@ bool ParseMaterialRoot(
             const bool graphDecoded =
                     cursor.Remaining() == 0u && customParsed &&
                     !modelPlainPath.empty() &&
-                    DecodeMaterialModelWaterGraph(
+                    DecodeMaterialModelRenderGraph(
                             pack,
                             modelPlainPath.c_str(),
                             modelSelectedPath.c_str(),
@@ -1419,6 +1491,13 @@ bool ParseMaterialRoot(
 std::optional<MaterialRenderDefinition> DecodeMaterialRenderArchive(
         const CPlugFilePack &pack,
         const char *materialPlainPath) {
+    return DecodeMaterialRenderArchive(pack, materialPlainPath, {});
+}
+
+std::optional<MaterialRenderDefinition> DecodeMaterialRenderArchive(
+        const CPlugFilePack &pack,
+        const char *materialPlainPath,
+        std::shared_ptr<const MaterialTextureAssetSource> textureSource) {
     if (materialPlainPath == nullptr || materialPlainPath[0] == '\0') {
         return std::nullopt;
     }
@@ -1454,6 +1533,20 @@ std::optional<MaterialRenderDefinition> DecodeMaterialRenderArchive(
                            materialPlainPath,
                            &definition)) {
         return std::nullopt;
+    }
+    if (textureSource) {
+        try {
+            std::vector<MaterialRenderBitmapDefinition> bitmaps =
+                    definition.Bitmaps();
+            for (MaterialRenderBitmapDefinition &bitmap : bitmaps) {
+                if (!bitmap.imageSelectedPath.empty()) {
+                    bitmap.imageSource = textureSource;
+                }
+            }
+            definition.ReplaceBitmaps(std::move(bitmaps));
+        } catch (const std::bad_alloc &) {
+            return std::nullopt;
+        }
     }
     return definition;
 }
