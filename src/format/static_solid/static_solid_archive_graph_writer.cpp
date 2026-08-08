@@ -79,6 +79,18 @@ void CGameCtnReplayStaticSolidArchiveTreeSourceLocalRefs::
 }
 
 ArchiveNodeReference
+CGameCtnReplayStaticSolidArchiveTreeSourceLocalRefs::ShaderNode()
+        const {
+    return shaderNode;
+}
+
+ArchiveNodeReference
+CGameCtnReplayStaticSolidArchiveTreeSourceLocalRefs::MaterialNode()
+        const {
+    return materialNode;
+}
+
+ArchiveNodeReference
 CGameCtnReplayStaticSolidArchiveTreeSourceLocalRefs::SurfaceSourceNode()
         const {
     return surfaceSourceNode;

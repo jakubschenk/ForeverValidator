@@ -12,6 +12,7 @@
 #include "format/pack/installed_vehicle_asset_graph.h"
 #include "format/static_solid/static_solid_archive_assembler.h"
 #include "format/static_solid/static_scene_archive_loader.h"
+#include "format/static_solid/static_solid_descriptor_dependency_queue.h"
 
 namespace {
 
@@ -252,63 +253,147 @@ StaticSolidPrototype BuildVisualPrototype(
     return StaticSolidPrototype(solid.Get());
 }
 
+bool TreeHasVisual(const CPlugTree *tree) {
+    if (tree == nullptr) {
+        return false;
+    }
+    if (tree->Visual() != nullptr) {
+        return true;
+    }
+    for (u32 childIndex = 0u; childIndex < tree->GetChildCount();
+         ++childIndex) {
+        if (TreeHasVisual(tree->GetChild(childIndex))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+CPlugTree *FindVehicleVisualRoot(
+        StaticSolidArchiveAssembler &assembler,
+        const StaticSolidArchiveLoadSession &archive,
+        StaticSolidArchiveId collisionPayload) {
+    CPlugTree *collisionRoot = assembler.CollisionRoot(collisionPayload);
+    if (TreeHasVisual(collisionRoot)) {
+        return collisionRoot;
+    }
+
+    for (u32 payloadIndex = 0u; payloadIndex < archive.ArchiveCount();
+         ++payloadIndex) {
+        const StaticSolidArchiveId payload =
+                StaticSolidArchiveId::FromIndex(payloadIndex);
+        if (payload.Matches(collisionPayload)) {
+            continue;
+        }
+        CPlugTree *candidate = assembler.CollisionRoot(payload);
+        if (TreeHasVisual(candidate)) {
+            return candidate;
+        }
+    }
+    return nullptr;
+}
+
 std::optional<DefaultVehicleSolidAssets> LoadVehicleAssets(
         CPlugFilePack &pack,
         const InstalledVehicleAssetGraph &assets,
         MaterialAssetRepository *materialAssets,
-        bool buildVisual) {
+        bool buildVisual,
+        std::string *diagnostic) {
+    const auto fail = [&](const char *message) {
+        if (diagnostic != nullptr) {
+            *diagnostic = message;
+        }
+        return std::optional<DefaultVehicleSolidAssets>{};
+    };
+    if (diagnostic != nullptr) {
+        diagnostic->clear();
+    }
     if (!assets.IsComplete()) {
-        return std::nullopt;
+        return fail("installed vehicle asset graph is incomplete");
     }
     const CPlugFileFidContainer_SFileDesc *file =
             pack.FindFileDescByPath(assets.solid.selectedPath.c_str());
     if (file == nullptr) {
-        return std::nullopt;
+        return fail("vehicle solid descriptor is absent from the pack");
     }
 
     StaticSolidArchiveLoadSession archive;
     if (!archive.InstallPackSource(pack)) {
-        return std::nullopt;
+        return fail("vehicle solid pack source could not be installed");
     }
     if (materialAssets != nullptr) {
         archive.InstallMaterialAssets(*materialAssets);
     }
 
-    CGameCtnReplayStaticSolidDecodedPayload decodedPayload;
-    CGameCtnReplayStaticSolidArchiveDecodeStats stats;
-    if (!archive.DecodePackFilePayloadWithStreamFeedback(
-            pack,
-            *file,
-            0u,
-            1u,
-            assets.solid.logicalPath.c_str(),
-            assets.solid.selectedPath.c_str(),
-            &decodedPayload,
-            &stats) ||
-        !decodedPayload.IsReady() ||
-        decodedPayload.ByteCount() != file->uncompressedSize) {
-        return std::nullopt;
+    if (buildVisual) {
+        StaticSolidArchiveCatalog inventory;
+        CGameCtnReplayStaticSolidDescriptorDependencyQueue dependencyQueue;
+        u32 missingDependencies = 0u;
+        if (!inventory.LoadFromInstalledPack(&pack) ||
+            inventory.Find(assets.solid.selectedPath.c_str()) == nullptr) {
+            return fail(
+                    "vehicle solid descriptor is absent from the "
+                    "static-solid inventory");
+        }
+        if (!dependencyQueue.RequireDescriptor(
+                    assets.solid.selectedPath.c_str()) ||
+            !dependencyQueue.DecodeReachablePayloadGraph(
+                    &inventory,
+                    &archive,
+                    nullptr,
+                    &missingDependencies) ||
+            missingDependencies != 0u ||
+            !archive.HasDescriptor(assets.solid.selectedPath.c_str())) {
+            return fail("vehicle solid descriptor graph decode failed");
+        }
+    } else {
+        CGameCtnReplayStaticSolidDecodedPayload decodedPayload;
+        CGameCtnReplayStaticSolidArchiveDecodeStats stats;
+        if (!archive.DecodePackFilePayloadWithStreamFeedback(
+                    pack,
+                    *file,
+                    0u,
+                    1u,
+                    assets.solid.logicalPath.c_str(),
+                    assets.solid.selectedPath.c_str(),
+                    &decodedPayload,
+                    &stats) ||
+            !decodedPayload.IsReady() ||
+            decodedPayload.ByteCount() != file->uncompressedSize) {
+            return fail("vehicle solid descriptor decode failed");
+        }
     }
 
     StaticSolidArchiveAssembler assembler;
     if (!assembler.Assemble(archive.ArchiveGraph(), archive)) {
-        return std::nullopt;
+        return fail("vehicle solid graph assembly failed");
     }
     const StaticSolidArchiveId payload =
-            StaticSolidArchiveId::FromIndex(0u);
+            archive.SelectPayloadForDescriptor(
+                    assets.solid.selectedPath.c_str());
+    if (!payload.IsValid()) {
+        return fail("vehicle solid payload was not retained after decode");
+    }
     CPlugTree *collisionRoot = assembler.CollisionRoot(payload);
     if (collisionRoot == nullptr) {
-        return std::nullopt;
+        return fail("vehicle solid has no assembled root tree");
     }
 
     DefaultVehicleSolidAssets result;
     if (!ExtractWheelDefinitions(
                 archive, collisionRoot, result.definition)) {
-        return std::nullopt;
+        return fail("vehicle solid wheel definition extraction failed");
     }
     if (buildVisual) {
+        CPlugTree *visualRoot =
+                FindVehicleVisualRoot(assembler, archive, payload);
         result.visualPrototype = BuildVisualPrototype(
-                collisionRoot, assembler.Physics(payload));
+                visualRoot, assembler.Physics(payload));
+        if (!result.visualPrototype.IsValid() && diagnostic != nullptr) {
+            *diagnostic = visualRoot == nullptr
+                    ? "vehicle solid descriptor graph has no visual tree"
+                    : "vehicle solid visual tree could not be cloned";
+        }
     }
     return result;
 }
@@ -330,7 +415,7 @@ DefaultVehicleSolidArchive::LoadFromPack(
         CPlugFilePack &pack,
         const InstalledVehicleAssetGraph &assets) {
     std::optional<DefaultVehicleSolidAssets> loaded =
-            LoadVehicleAssets(pack, assets, nullptr, false);
+            LoadVehicleAssets(pack, assets, nullptr, false, nullptr);
     return loaded.has_value()
             ? std::optional<ReplayVehicleSolidDefinition>(
                       std::move(loaded->definition))
@@ -341,6 +426,8 @@ std::optional<DefaultVehicleSolidAssets>
 DefaultVehicleSolidArchive::LoadAssetsFromPack(
         CPlugFilePack &pack,
         const InstalledVehicleAssetGraph &assets,
-        MaterialAssetRepository &materialAssets) {
-    return LoadVehicleAssets(pack, assets, &materialAssets, true);
+        MaterialAssetRepository &materialAssets,
+        std::string *diagnostic) {
+    return LoadVehicleAssets(
+            pack, assets, &materialAssets, true, diagnostic);
 }

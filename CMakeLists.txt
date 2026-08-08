@@ -779,6 +779,23 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
     add_test(NAME forevervalidator-render-scene
              COMMAND forevervalidator-render-scene-tests)
 
+    add_executable(forevervalidator-vehicle-render-scene-fixture-tests
+        tests/vehicle_render_scene_fixture_tests.cpp)
+    target_include_directories(
+        forevervalidator-vehicle-render-scene-fixture-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(
+        forevervalidator-vehicle-render-scene-fixture-tests PRIVATE
+        forevervalidator_native)
+    forevervalidator_configure_target(
+        forevervalidator-vehicle-render-scene-fixture-tests)
+    add_test(NAME forevervalidator-vehicle-render-scene-fixture
+        COMMAND forevervalidator-vehicle-render-scene-fixture-tests)
+    set_tests_properties(
+        forevervalidator-vehicle-render-scene-fixture PROPERTIES
+        SKIP_RETURN_CODE 77
+        LABELS integration)
+
     add_executable(forevervalidator-replay-control-plan-tests
         tests/replay_control_plan_tests.cpp)
     target_include_directories(

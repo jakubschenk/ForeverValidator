@@ -6,6 +6,7 @@
 #include "format/static_solid/static_solid_archive_cmwid_state.h"
 #include "format/static_solid/static_solid_archive_decode_progress.h"
 #include "format/static_solid/static_solid_archive_graph_writer.h"
+#include "format/static_solid/static_solid_material_definition_resolver.h"
 #include "format/static_solid/static_solid_archive_primitive_reader.h"
 #include "format/static_solid/static_solid_archive_tree_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_tree_state_flags.h"
@@ -182,7 +183,21 @@ int CPlugTreeVisualArchivePayload::ReadSurfaceOnly(
 }
 
 int CPlugTreeVisualArchivePayload::Install(
+    CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
+    const SceneDescriptorFolderPaths *externalFolders,
+    const char *sourceDescriptorPath,
     StaticSolidArchiveLoadSession *store) const {
+  /*
+   * Older vehicle solids store a CPlugMaterial in the tree's legacy shader
+   * slot.  Resolve both candidate slots best-effort: real shader nodes simply
+   * remain shaders, while material assets become usable render materials.
+   */
+  (void)StaticSolidMaterialAssetLinker::ResolveAndAppend(
+      archiveNodeGraph, externalFolders, store, payload,
+      treeSourceRefs.ShaderNode().Index(), sourceDescriptorPath);
+  (void)StaticSolidMaterialAssetLinker::ResolveAndAppend(
+      archiveNodeGraph, externalFolders, store, payload,
+      treeSourceRefs.MaterialNode().Index(), sourceDescriptorPath);
   CGameCtnReplayStaticSolidArchiveGraphWriter writer(
       store != nullptr ? &store->MutableArchiveGraph() : nullptr, payload);
   return writer.AddTreeSourceLink(treeNode, treeSourceRefs, chunkId) &&
@@ -337,6 +352,11 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
   StaticSolidArchiveLoadSession *store = context.materialStore;
   const StaticSolidArchiveId selectedPayload = context.payload;
   CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs = context.nodeRefs;
+  const StaticSolidArchivePayload *sourcePayload =
+      byteStream->PayloadAsset();
+  const char *sourceDescriptorPath = sourcePayload != nullptr
+      ? sourcePayload->PlainPackPath()
+      : nullptr;
 
   if (classId == TMNF_CLASS_CPlugTreeLight) {
     if (IsCPlugTreeLightBaseArchiveChunk(chunkId)) {
@@ -368,7 +388,10 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
     CPlugTreeVisualArchivePayload payload;
     payload.Reset(context.payload, treeNodeIndex, chunkId);
     return payload.ReadSurfaceRefs(context.nodeRefs) &&
-           payload.Install(context.materialStore);
+           payload.Install(context.archiveNodeGraph,
+                           context.externalFolders,
+                           sourceDescriptorPath,
+                           context.materialStore);
   }
   if (chunkId == ArchiveChunkIdValue(CPlugTreeArchiveChunkId::ChildBuffer)) {
     CPlugTreeChildLinksArchivePayload payload;
@@ -393,7 +416,11 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
                      CPlugTreeArchiveChunkId::SourceSurfaceGeneratorRefs)) {
     CPlugTreeVisualArchivePayload payload;
     payload.Reset(selectedPayload, treeNodeIndex, chunkId);
-    return payload.ReadSurfaceGeneratorRefs(nodeRefs) && payload.Install(store);
+    return payload.ReadSurfaceGeneratorRefs(nodeRefs) &&
+           payload.Install(context.archiveNodeGraph,
+                           context.externalFolders,
+                           sourceDescriptorPath,
+                           store);
   }
   if (chunkId ==
       ArchiveChunkIdValue(
@@ -401,7 +428,10 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
     CPlugTreeVisualArchivePayload payload;
     payload.Reset(selectedPayload, treeNodeIndex, chunkId);
     return payload.ReadMaterialSurfaceGeneratorRefs(nodeRefs) &&
-           payload.Install(store);
+           payload.Install(context.archiveNodeGraph,
+                           context.externalFolders,
+                           sourceDescriptorPath,
+                           store);
   }
   if (chunkId ==
       ArchiveChunkIdValue(CPlugTreeArchiveChunkId::StateAndTransformA)) {
@@ -443,7 +473,11 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
                      CPlugTreeArchiveChunkId::SourceSurfaceGeneratorRefs2)) {
     CPlugTreeVisualArchivePayload payload;
     payload.Reset(selectedPayload, treeNodeIndex, chunkId);
-    return payload.ReadSurfaceGeneratorRefs(nodeRefs) && payload.Install(store);
+    return payload.ReadSurfaceGeneratorRefs(nodeRefs) &&
+           payload.Install(context.archiveNodeGraph,
+                           context.externalFolders,
+                           sourceDescriptorPath,
+                           store);
   }
   if (chunkId ==
       ArchiveChunkIdValue(CPlugTreeArchiveChunkId::StateAndTransformD)) {
@@ -483,7 +517,11 @@ int CGameCtnReplayStaticSolidArchiveTreeReader::ParseTreeChunk(
                      CPlugTreeGeneratedArchiveChunkId::SurfaceOnlySource)) {
     CPlugTreeVisualArchivePayload payload;
     payload.Reset(selectedPayload, treeNodeIndex, chunkId);
-    return payload.ReadSurfaceOnly(nodeRefs) && payload.Install(store);
+    return payload.ReadSurfaceOnly(nodeRefs) &&
+           payload.Install(context.archiveNodeGraph,
+                           context.externalFolders,
+                           sourceDescriptorPath,
+                           store);
   }
   return 0;
 }

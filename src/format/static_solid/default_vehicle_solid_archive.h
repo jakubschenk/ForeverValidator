@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include "engine/game/replay_vehicle_solid_definition.h"
 #include "engine/resources/static_solid_asset.h"
@@ -23,5 +24,6 @@ public:
     static std::optional<DefaultVehicleSolidAssets> LoadAssetsFromPack(
             CPlugFilePack &pack,
             const InstalledVehicleAssetGraph &assets,
-            MaterialAssetRepository &materialAssets);
+            MaterialAssetRepository &materialAssets,
+            std::string *diagnostic = nullptr);
 };
