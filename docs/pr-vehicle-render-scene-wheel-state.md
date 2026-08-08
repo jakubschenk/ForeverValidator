@@ -19,9 +19,13 @@ positions in each sandbox car state.
 ## Loading, caching, and fallback
 
 The installed vehicle solid is decoded once per cached `(vehicle model, pack)`
-entry. That decode supplies both the authoritative physics definition and, when
-available, a cloned visual prototype. The existing static render-scene builder
-then flattens that prototype and retains resolved material texture sources in
+entry. The visual load follows the complete reachable descriptor graph, so
+external visual providers referenced by the collision solid contribute their
+real vertex and index payloads. Legacy tree shader slots that actually refer to
+materials are resolved relative to the current descriptor's media root (for
+example, `Vehicles\Media\Solid` to `Vehicles\Media\Material`) rather than an
+incorrect pack-name prefix. The existing static render-scene builder then
+flattens the cloned prototype and retains resolved material texture sources in
 the immutable scene handle. Sandboxes and optimized-CPU clones share the cached
 handle rather than decoding or copying mesh buffers again.
 
@@ -34,8 +38,12 @@ error when no visual is available so clients can keep their ellipsoid fallback.
 ## Validation
 
 - Full non-CUDA build completed successfully.
-- All 14 configured CPU tests pass.
+- All 14 regular CPU tests pass; the installed-game integration fixture skips
+  when its explicit pack/replay arguments are not supplied.
 - `forevervalidator-render-scene` now checks reusable local-space scene
   building, immutable shared scene handles, and the public wheel-position
   field.
-
+- The strict installed TMNF fixture produces 87 meshes and instances, three
+  authored materials, 11 bound material bitmaps, and nine readable encoded
+  texture assets. It fails if geometry is present without authored materials
+  or readable texture bytes.

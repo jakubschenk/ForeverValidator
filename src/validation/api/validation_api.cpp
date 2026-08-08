@@ -51,6 +51,7 @@ struct CachedVehicleAssets {
     InstalledVehicleAssetGraph assetGraph;
     ReplayVehicleSourceBundle vehicleSources;
     experimental::PhysicsSandboxRenderSceneHandle renderScene;
+    std::string renderDiagnostic;
 };
 
 struct PreparedAssets {
@@ -58,6 +59,7 @@ struct PreparedAssets {
     ReplayAssetRepository *decorationAssets = nullptr;
     const ReplayVehicleSourceBundle *vehicleSources = nullptr;
     experimental::PhysicsSandboxRenderSceneHandle vehicleRenderScene;
+    std::string vehicleRenderDiagnostic;
 };
 
 struct ValidationState {
@@ -938,6 +940,7 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
         std::optional<DefaultVehiclePackData> vehicle =
                 DefaultVehiclePackArchive::LoadFromPack(pack, *assetGraph);
         std::optional<DefaultVehicleSolidAssets> solidAssets;
+        std::string vehicleRenderDiagnostic;
         Result<CachedPackAssets *> vehiclePackAssetsResult =
                 PreparePackAssets(context, packName, identity);
         if (vehiclePackAssetsResult) {
@@ -946,9 +949,19 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
                         DefaultVehicleSolidArchive::LoadAssetsFromPack(
                                 pack,
                                 *assetGraph,
-                                *vehiclePackAssetsResult.Value()->repository);
+                                *vehiclePackAssetsResult.Value()->repository,
+                                &vehicleRenderDiagnostic);
             } catch (...) {
                 solidAssets.reset();
+                vehicleRenderDiagnostic =
+                        "unexpected vehicle visual archive failure";
+            }
+        } else {
+            vehicleRenderDiagnostic =
+                    "vehicle material repository is unavailable";
+            if (!vehiclePackAssetsResult.Error().diagnostic.empty()) {
+                vehicleRenderDiagnostic += ": " +
+                        vehiclePackAssetsResult.Error().diagnostic;
             }
         }
         std::optional<ReplayVehicleSolidDefinition> solid;
@@ -994,10 +1007,23 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
                     if (built && !built->meshes.empty() &&
                         !built->instances.empty()) {
                         vehicleRenderScene = std::move(built);
+                        vehicleRenderDiagnostic.clear();
+                    } else if (!built) {
+                        vehicleRenderDiagnostic =
+                                "vehicle visual render-scene build failed";
+                    } else {
+                        vehicleRenderDiagnostic =
+                                "vehicle visual render scene has no supported "
+                                "mesh instances";
                     }
+                } else {
+                    vehicleRenderDiagnostic =
+                            "vehicle visual model allocation failed";
                 }
             } catch (...) {
                 vehicleRenderScene.reset();
+                vehicleRenderDiagnostic =
+                        "unexpected vehicle render-scene build failure";
             }
         }
         auto cached = std::make_unique<CachedVehicleAssets>();
@@ -1009,6 +1035,7 @@ Result<CachedVehicleAssets *> PrepareVehicleAssets(
                 std::move(vehicle->tuning),
                 std::move(vehicle->vehicle)};
         cached->renderScene = std::move(vehicleRenderScene);
+        cached->renderDiagnostic = std::move(vehicleRenderDiagnostic);
         if (!cached->vehicleSources.IsComplete()) {
             ValidationError error = MakeError(
                     ValidationErrorCategory::Asset,
@@ -1060,6 +1087,7 @@ Result<PreparedAssets> PrepareAssets(
             decorationResult.Value()->repository.get(),
             &vehicleResult.Value()->vehicleSources,
             vehicleResult.Value()->renderScene,
+            vehicleResult.Value()->renderDiagnostic,
     });
 }
 
@@ -1578,6 +1606,7 @@ struct PhysicsSandbox::Impl {
     PhysicsSandboxSceneView scene{};
     PhysicsSandboxRenderSceneHandle renderScene;
     PhysicsSandboxRenderSceneHandle vehicleRenderScene;
+    std::string vehicleRenderDiagnostic;
     std::size_t cursor = 0u;
     std::size_t prestartTicks = 0u;
     bool loaded = false;
@@ -2381,6 +2410,8 @@ PhysicsSandboxResult<PhysicsSandboxStateView> PhysicsSandbox::LoadScenarioFile(
         impl_->renderScene = std::move(renderScene);
         impl_->vehicleRenderScene =
                 prepared.Value().vehicleRenderScene;
+        impl_->vehicleRenderDiagnostic =
+                prepared.Value().vehicleRenderDiagnostic;
         impl_->inputs = SandboxInputStorage::Full(std::move(inputs));
         impl_->prestartTicks =
                 impl_->options.prestartDurationMs /
@@ -3089,11 +3120,17 @@ PhysicsSandboxResult<PhysicsSandboxRenderSceneHandle>
 PhysicsSandbox::ReadVehicleRenderScene() const noexcept {
     try {
         if (!impl_ || !impl_->loaded || !impl_->vehicleRenderScene) {
+            const std::string diagnostic =
+                    impl_ != nullptr &&
+                            !impl_->vehicleRenderDiagnostic.empty()
+                    ? "sandbox has no loaded vehicle render scene: " +
+                              impl_->vehicleRenderDiagnostic
+                    : "sandbox has no loaded vehicle render scene";
             return PhysicsSandboxResult<
                     PhysicsSandboxRenderSceneHandle>::Failure(
                     SandboxError(
                             PhysicsSandboxErrorCode::InvalidSandbox,
-                            "sandbox has no loaded vehicle render scene"));
+                            diagnostic.c_str()));
         }
         return PhysicsSandboxResult<
                 PhysicsSandboxRenderSceneHandle>::Success(
@@ -3193,6 +3230,8 @@ PhysicsSandboxResult<PhysicsSandbox> ClonePhysicsSandbox(
         impl->scene = source.impl_->scene;
         impl->renderScene = source.impl_->renderScene;
         impl->vehicleRenderScene = source.impl_->vehicleRenderScene;
+        impl->vehicleRenderDiagnostic =
+                source.impl_->vehicleRenderDiagnostic;
         impl->cursor = 0u;
         impl->prestartTicks = source.impl_->prestartTicks;
         impl->loaded = true;
