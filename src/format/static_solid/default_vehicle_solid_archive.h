@@ -5,9 +5,22 @@
 
 #include "engine/game/replay_vehicle_solid_definition.h"
 #include "engine/resources/static_solid_asset.h"
+#include "format/static_solid/static_solid_archive_id.h"
+struct CPlugTree;
 struct CPlugFilePack;
 struct InstalledVehicleAssetGraph;
+class CGameCtnReplayStaticSolidArchiveGraph;
 class MaterialAssetRepository;
+
+namespace default_vehicle_solid_archive_detail {
+
+bool ExtractWheelDefinitions(
+        const CGameCtnReplayStaticSolidArchiveGraph &graph,
+        StaticSolidArchiveId payload,
+        CPlugTree *collisionRoot,
+        ReplayVehicleSolidDefinition &definitions);
+
+}  // namespace default_vehicle_solid_archive_detail
 
 struct DefaultVehicleSolidAssets {
     ReplayVehicleSolidDefinition definition;

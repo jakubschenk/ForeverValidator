@@ -13,6 +13,31 @@
 
 namespace {
 
+bool IsSafeMaterialRelativePath(std::string_view path) {
+    if (path.rfind("Material\\", 0u) != 0u ||
+        path.find('\0') != std::string_view::npos ||
+        path.find('/') != std::string_view::npos) {
+        return false;
+    }
+    std::size_t segmentStart = 0u;
+    while (segmentStart <= path.size()) {
+        const std::size_t separator = path.find('\\', segmentStart);
+        const std::size_t segmentEnd = separator == std::string_view::npos
+                ? path.size()
+                : separator;
+        const std::string_view segment =
+                path.substr(segmentStart, segmentEnd - segmentStart);
+        if (segment.empty() || segment == "." || segment == "..") {
+            return false;
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        segmentStart = separator + 1u;
+    }
+    return true;
+}
+
 std::optional<ResolvedMaterialDefinition> ResolveRelativeToDescriptor(
         MaterialAssetRepository &assets,
         const StaticSolidArchiveLoadSession &store,
@@ -44,8 +69,12 @@ std::optional<ResolvedMaterialDefinition> ResolveRelativeToDescriptor(
         }
         std::string relative = path.HasPlainPath()
                 ? std::string(path.PlainPath())
-                : std::string("Material\\") + identifier;
-        if (relative.rfind("Material\\", 0u) != 0u) {
+                : identifier;
+        if (!path.HasPlainPath() &&
+            relative.rfind("Material\\", 0u) != 0u) {
+            relative.insert(0u, "Material\\");
+        }
+        if (!IsSafeMaterialRelativePath(relative)) {
             return std::nullopt;
         }
         std::string contextual = source.substr(

@@ -7,12 +7,18 @@
 #include "engine/rendering/plug_tree.h"
 #include "engine/scene/plug_solid.h"
 #include "engine/scene/static_scene_model.h"
+#include "format/archive/archive_class_ids.h"
+#include "format/static_solid/default_vehicle_solid_archive.h"
 #include "format/static_solid/static_solid_geometry_decoder.h"
 #include "format/static_solid/static_scene_archive_loader.h"
+#include "format/static_solid/static_solid_archive_graph_writer.h"
+#include "format/static_solid/static_solid_archive_node_graph.h"
+#include "format/static_solid/static_solid_material_definition_resolver.h"
 #include "simulation/replay/replay_scene_surface_resolution.h"
 #include "simulation/runtime/replay_simulation_session.h"
 #include "simulation/runtime/physics_sandbox_texture_assets.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -154,6 +160,66 @@ public:
             std::string_view) override {
         return std::nullopt;
     }
+};
+
+class DescriptorRelativeMaterialRepository final
+        : public MaterialAssetRepository {
+public:
+    static constexpr const char *MaterialPath =
+            R"(Vehicles\Media\Material\StadiumCarSkin.Material.Gbx)";
+    static constexpr const char *TexturePath =
+            R"(Vehicles\Media\Texture\StadiumCarSkin.Dds)";
+
+    DescriptorRelativeMaterialRepository()
+            : textureSource_(std::make_shared<TestTextureSource>(
+                      "descriptor-relative-vehicle-material",
+                      TexturePath,
+                      std::vector<std::byte>{
+                              std::byte{0x44},
+                              std::byte{0x44},
+                              std::byte{0x53},
+                              std::byte{0x20}})) {}
+
+    std::optional<ResolvedMaterialDefinition> ResolveMaterial(
+            std::string_view) override {
+        return std::nullopt;
+    }
+
+    std::optional<ResolvedMaterialDefinition> ResolveMaterialPath(
+            std::string_view plainPath) override {
+        ++pathResolutionCount_;
+        lastResolvedPath_ = plainPath;
+        if (plainPath != MaterialPath) {
+            return std::nullopt;
+        }
+
+        ResolvedMaterialDefinition result;
+        result.material.asset = MaterialAssetHandle::FromRepositoryIndex(0u);
+        result.material.render.SetMaterialPaths(MaterialPath, MaterialPath);
+        MaterialRenderBitmapDefinition bitmap;
+        bitmap.samplerName = "Diffuse";
+        bitmap.imagePlainPath = TexturePath;
+        bitmap.imageSelectedPath = TexturePath;
+        bitmap.imageEncodedByteCount = 4u;
+        bitmap.imageSource = textureSource_;
+        if (!result.material.render.AppendBitmap(std::move(bitmap))) {
+            return std::nullopt;
+        }
+        return result;
+    }
+
+    std::uint32_t PathResolutionCount() const {
+        return pathResolutionCount_;
+    }
+
+    const std::string &LastResolvedPath() const {
+        return lastResolvedPath_;
+    }
+
+private:
+    std::shared_ptr<TestTextureSource> textureSource_;
+    std::uint32_t pathResolutionCount_ = 0u;
+    std::string lastResolvedPath_;
 };
 
 void AppendFloat(std::vector<std::uint8_t> *bytes, float value) {
@@ -443,6 +509,277 @@ bool TestRenderMaterialPreservesSemanticPaths() {
     return okay;
 }
 
+bool TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot() {
+    constexpr const char *ExternalMaterial =
+            R"(Material\StadiumCarSkin.Material.Gbx)";
+    constexpr const char *VehicleDescriptor =
+            R"(Vehicles\Media\Solid\StadiumCar.Solid.Gbx)";
+
+    CGameCtnReplayStaticSolidArchiveNodeGraph nodes;
+    const ArchiveNodeReference materialNode =
+            ArchiveNodeReference::FromIndex(0u);
+    bool okay = Check(
+            nodes.EnsureNodeCapacity(materialNode.Index()) &&
+                    nodes.MarkExternalNode(
+                            materialNode,
+                            1u,
+                            ArchiveNodeReference::InvalidIndex,
+                            ExternalMaterial),
+            "vehicle material test node could not be created");
+
+    DescriptorRelativeMaterialRepository repository;
+    StaticSolidArchiveLoadSession archive;
+    archive.InstallMaterialAssets(repository);
+    okay &= Check(
+            StaticSolidMaterialAssetLinker::ResolveAndAppend(
+                    &nodes,
+                    nullptr,
+                    &archive,
+                    StaticSolidArchiveId::FromIndex(0u),
+                    materialNode.Index(),
+                    VehicleDescriptor),
+            "vehicle material did not resolve relative to descriptor Media root");
+    okay &= Check(
+            repository.PathResolutionCount() == 1u &&
+                    repository.LastResolvedPath() ==
+                            DescriptorRelativeMaterialRepository::MaterialPath,
+            "vehicle material resolved through the wrong semantic path");
+
+    const auto *node = nodes.FindNode(materialNode);
+    okay &= Check(
+            node != nullptr && node->ClassId() == TMNF_CLASS_CPlugMaterial,
+            "resolved vehicle material node was not linked as CPlugMaterial");
+
+    bool sawMaterial = false;
+    bool loadedTexture = false;
+    archive.ArchiveGraph().SurfaceGraph().ForEachMaterialDefinition(
+            [&](const CGameCtnReplayStaticSolidArchiveMaterialDefinition
+                        &definition) {
+                const MaterialRenderDefinition &render = definition.Render();
+                sawMaterial =
+                        render.MaterialPlainPath() ==
+                                DescriptorRelativeMaterialRepository::
+                                        MaterialPath &&
+                        render.Bitmaps().size() == 1u;
+                if (!sawMaterial) {
+                    return 1;
+                }
+                const MaterialRenderBitmapDefinition &bitmap =
+                        render.Bitmaps().front();
+                if (!bitmap.imageSource) {
+                    return 1;
+                }
+                const MaterialTextureAssetSourceResult texture =
+                        bitmap.imageSource->ReadEncodedBytes(
+                                bitmap.imageSelectedPath);
+                loadedTexture = texture && texture.Value().size() == 4u;
+                return 1;
+            });
+    okay &= Check(
+            archive.ArchiveGraph()
+                            .SurfaceGraph()
+                            .MaterialDefinitionCount() == 1u &&
+                    sawMaterial && loadedTexture,
+            "descriptor-relative vehicle material lost its texture asset");
+
+    const auto attemptedPathResolutions = [](
+            const std::string &identifier,
+            const char *descriptor) {
+        CGameCtnReplayStaticSolidArchiveNodeGraph candidateNodes;
+        const ArchiveNodeReference candidateMaterial =
+                ArchiveNodeReference::FromIndex(0u);
+        if (!candidateNodes.EnsureNodeCapacity(candidateMaterial.Index()) ||
+            !candidateNodes.MarkExternalNode(
+                    candidateMaterial,
+                    1u,
+                    ArchiveNodeReference::InvalidIndex,
+                    identifier)) {
+            return std::uint32_t{0u};
+        }
+        DescriptorRelativeMaterialRepository candidateRepository;
+        StaticSolidArchiveLoadSession candidateArchive;
+        candidateArchive.InstallMaterialAssets(candidateRepository);
+        (void)StaticSolidMaterialAssetLinker::ResolveAndAppend(
+                &candidateNodes,
+                nullptr,
+                &candidateArchive,
+                StaticSolidArchiveId::FromIndex(0u),
+                candidateMaterial.Index(),
+                descriptor);
+        return candidateRepository.PathResolutionCount();
+    };
+    okay &= Check(
+            attemptedPathResolutions(
+                    "StadiumCarSkin.Material.Gbx",
+                    VehicleDescriptor) == 1u,
+            "bare vehicle material lost legacy prefix resolution");
+    std::string embeddedNul =
+            R"(Material\StadiumCarSkin.Material.Gbx)";
+    embeddedNul.push_back('\0');
+    embeddedNul += "ignored";
+    const std::array<std::string, 4u> invalidIdentifiers{{
+            R"(Material\..\StadiumCarSkin.Material.Gbx)",
+            R"(Material\\StadiumCarSkin.Material.Gbx)",
+            R"(Material/StadiumCarSkin.Material.Gbx)",
+            embeddedNul,
+    }};
+    for (const std::string &invalid : invalidIdentifiers) {
+        okay &= Check(
+                attemptedPathResolutions(invalid, VehicleDescriptor) == 0u,
+                "unsafe descriptor-relative vehicle material reached the "
+                "pack repository");
+    }
+    okay &= Check(
+            attemptedPathResolutions(
+                    ExternalMaterial,
+                    R"(Vehicles\Solid\StadiumCar.Solid.Gbx)") == 0u,
+            "vehicle material resolved without a descriptor Media root");
+    return okay;
+}
+
+bool AddVehicleCollisionPayload(
+        CGameCtnReplayStaticSolidArchiveGraph *graph,
+        StaticSolidArchiveId payload,
+        float bodyHalfExtent,
+        float wheelRadius) {
+    static constexpr std::array<const char *, 5u> TreeNames{
+            "BodySurf",
+            "FLSurf",
+            "FRSurf",
+            "RRSurf",
+            "RLSurf",
+    };
+    CGameCtnReplayStaticSolidArchiveGraphWriter writer(graph, payload);
+    for (u32 index = 0u; index < TreeNames.size(); ++index) {
+        const ArchiveNodeReference tree =
+                ArchiveNodeReference::FromIndex(index * 3u);
+        const ArchiveNodeReference surface =
+                ArchiveNodeReference::FromIndex(index * 3u + 1u);
+        const ArchiveNodeReference geometry =
+                ArchiveNodeReference::FromIndex(index * 3u + 2u);
+        const auto identity =
+                CGameCtnReplayStaticSolidArchiveNodeIdentity::
+                        FromPayloadAndArchiveIndex(payload, geometry.Index());
+        if (!writer.AppendNode(tree, TMNF_CLASS_CPlugTree) ||
+            !writer.AppendNode(surface, TMNF_CLASS_CPlugSurface) ||
+            !writer.AppendNode(geometry, TMNF_CLASS_CPlugSurfaceGeom)) {
+            return false;
+        }
+        writer.SetTreeId(
+                tree,
+                CMwId::CreateFromLocalName(TreeNames[index]),
+                TreeNames[index]);
+
+        GmIso4 localTransform;
+        localTransform.SetIdentity();
+        CGameCtnReplayStaticSolidArchiveTreeStateDefinition treeState;
+        treeState.Install(
+                CGameCtnReplayStaticSolidArchiveNodeIdentity::
+                        FromPayloadAndArchiveIndex(payload, tree.Index()),
+                0u,
+                CGameCtnReplayStaticSolidArchiveTreeStateDefinition::
+                        Scope::Complete,
+                CPlugTree::SFlags{},
+                1u,
+                &localTransform);
+        if (!graph->TreeGraph().AddTreeState(treeState) ||
+            !writer.AddTreeSurfaceLink(tree, surface) ||
+            !writer.AddSurfaceGeometryLink(
+                    surface, geometry, 0u, 0u, 1u)) {
+            return false;
+        }
+
+        const float halfExtent =
+                index == 0u ? bodyHalfExtent : wheelRadius;
+        CGameCtnReplayStaticSolidArchiveSurfaceGeometryDefinition definition;
+        definition.Install(
+                identity,
+                1u,
+                static_cast<std::uint16_t>(
+                        EPlugSurfaceMaterialId_Concrete),
+                GmBoxAligned{
+                        {0.0f, 0.0f, 0.0f},
+                        {halfExtent, halfExtent, halfExtent}},
+                CGameCtnReplayStaticSolidArchiveMeshPayload::Empty());
+        if (!graph->SurfaceGraph().AddSurfaceGeometryDefinition(
+                    definition)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::unique_ptr<CPlugTree> BuildVehicleCollisionTree() {
+    static constexpr std::array<const char *, 5u> TreeNames{
+            "BodySurf",
+            "FLSurf",
+            "FRSurf",
+            "RRSurf",
+            "RLSurf",
+    };
+    auto root = std::make_unique<CPlugTree>();
+    root->SetIsRooted(1);
+    for (const char *name : TreeNames) {
+        auto child = std::make_unique<CPlugTree>();
+        child->SetPlugId(CMwId::CreateFromLocalName(name));
+        child->SetIsRooted(1);
+        root->AddOwnedChild(std::move(child));
+    }
+    return root;
+}
+
+bool TestVehiclePhysicsUsesSelectedArchivePayload() {
+    constexpr float WrongPayloadRadius = 0.25f;
+    constexpr float SelectedPayloadRadius = 0.75f;
+    constexpr float WrongBodyHalfExtent = 1.0f;
+    constexpr float SelectedBodyHalfExtent = 3.0f;
+    const StaticSolidArchiveId wrongPayload =
+            StaticSolidArchiveId::FromIndex(0u);
+    const StaticSolidArchiveId selectedPayload =
+            StaticSolidArchiveId::FromIndex(1u);
+
+    CGameCtnReplayStaticSolidArchiveGraph graph;
+    bool okay = Check(
+            AddVehicleCollisionPayload(
+                    &graph,
+                    wrongPayload,
+                    WrongBodyHalfExtent,
+                    WrongPayloadRadius) &&
+                    AddVehicleCollisionPayload(
+                            &graph,
+                            selectedPayload,
+                            SelectedBodyHalfExtent,
+                            SelectedPayloadRadius),
+            "two-payload vehicle archive fixture could not be built");
+    std::unique_ptr<CPlugTree> collisionRoot =
+            BuildVehicleCollisionTree();
+    ReplayVehicleSolidDefinition definitions;
+    okay &= Check(
+            default_vehicle_solid_archive_detail::ExtractWheelDefinitions(
+                    graph,
+                    selectedPayload,
+                    collisionRoot.get(),
+                    definitions),
+            "selected vehicle payload physics could not be extracted");
+    for (const auto &wheel : definitions.wheels) {
+        okay &= Check(
+                wheel.has_value() &&
+                        NearlyEqual(
+                                wheel->rollingRadius,
+                                SelectedPayloadRadius),
+                "vehicle wheel physics came from payload zero");
+    }
+    const auto &shapes =
+            definitions.collisionModel.ShapesInArchiveOrder();
+    okay &= Check(
+            !shapes.empty() &&
+                    NearlyEqual(
+                            shapes.front().shape.localBounds.halfExtents.y,
+                            SelectedBodyHalfExtent),
+            "vehicle body physics came from payload zero");
+    return okay;
+}
+
 bool TestLazyTextureAssetResolver() {
     using forevervalidator::experimental::
             PhysicsSandboxTextureAssetEncoding;
@@ -667,6 +1004,8 @@ int main() {
     okay &= TestProvenanceAndImmutableScene();
     okay &= TestReusableLocalRenderSceneBuilder();
     okay &= TestRenderMaterialPreservesSemanticPaths();
+    okay &= TestVehicleMaterialResolvesRelativeToDescriptorMediaRoot();
+    okay &= TestVehiclePhysicsUsesSelectedArchivePayload();
     okay &= TestLazyTextureAssetResolver();
     okay &= TestGenericBackgroundLayerClassification();
     okay &= TestClipJunctionSourceResolution();
