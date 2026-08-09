@@ -4,6 +4,7 @@
 #include "simulation/backends/cuda/cuda_backend.h"
 #include "simulation/backends/cuda/cuda_vehicle_cpu_reference.h"
 #include "simulation/runtime/replay_finish_time_estimator.h"
+#include <cmath>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -20,6 +21,27 @@
 #include "simulation/runtime/replay_validation_spawn.h"
 #include "engine/game/trackmania_race.h"
 namespace {
+
+bool IsFiniteVector(const GmVec3 &value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+bool NormalizeFiniteVector(GmVec3 &value) {
+    if (!IsFiniteVector(value)) {
+        return false;
+    }
+    const float lengthSquared =
+            value.x * value.x + value.y * value.y + value.z * value.z;
+    if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-12f) {
+        return false;
+    }
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    value.x *= inverseLength;
+    value.y *= inverseLength;
+    value.z *= inverseLength;
+    return IsFiniteVector(value);
+}
 
 enum FinishProbePhysicsPath : std::uint8_t {
     FinishProbeReference,
@@ -996,15 +1018,48 @@ ReplaySimulationRuntime::CurrentRaceCameraState() const {
             CSceneVehicleCarEngineControlState_GearShift;
     const std::size_t wheelCount =
             std::min<std::size_t>(car.WheelGetCount(), 4u);
+    const GmIso4 liveCorpusIso = state_->body.CaptureCurrentFrame().Location();
+    GmVec3 carUp;
+    carUp.SetMult(GmVec3{0.0f, 1.0f, 0.0f}, liveCorpusIso.rotation);
+    if (!NormalizeFiniteVector(carUp)) {
+        carUp = {0.0f, 1.0f, 0.0f};
+    }
     for (std::size_t index = 0u; index < wheelCount; ++index) {
         const CSceneVehicleCar::SSimulationWheel &wheel =
                 car.WheelAt(static_cast<u32>(index));
-        result.wheelContact[index] =
-                wheel.currentPhysicsState.contactPresent;
-        result.wheelHasSurface[index] =
-                wheel.asyncState.contactPresent;
-        result.wheelGroundPosition[index] =
-                wheel.currentPhysicsState.worldSurfacePoint;
+        // The canonical headless path does not run the presentation snapshot
+        // refresh used by the game renderer. Publish the authoritative live
+        // contact and transform the wheel-bottom point through the live body
+        // frame instead of reading permanently empty presentation snapshots.
+        result.wheelContact[index] = wheel.realTimeState.contactPresent;
+        result.wheelHasSurface[index] = wheel.realTimeState.contactPresent;
+        GmVec3 localGroundPosition = wheel.surfaceHandler.CurrentPoint();
+        localGroundPosition.y -= wheel.rollingRadius;
+        result.wheelGroundPosition[index].SetMult(
+                localGroundPosition, liveCorpusIso);
+        result.wheelContactPoint[index] = result.wheelGroundPosition[index];
+        result.wheelContactNormal[index] = carUp;
+
+        const bool acceptedContact = wheel.realTimeState.contactPresent &&
+                wheel.realTimeState.contactNormalSampleCount > 0u;
+        if (acceptedContact &&
+            IsFiniteVector(wheel.realTimeState.latestContactPoint)) {
+            GmVec3 worldContactPoint;
+            worldContactPoint.SetMult(
+                    wheel.realTimeState.latestContactPoint, liveCorpusIso);
+            if (IsFiniteVector(worldContactPoint)) {
+                result.wheelContactPoint[index] = worldContactPoint;
+            }
+        }
+        if (acceptedContact) {
+            GmVec3 worldContactNormal;
+            worldContactNormal.SetMult(
+                    wheel.realTimeState.accumulatedContactNormal,
+                    liveCorpusIso.rotation);
+            if (NormalizeFiniteVector(worldContactNormal)) {
+                result.wheelContactNormal[index] = worldContactNormal;
+            }
+        }
     }
     return result;
 }

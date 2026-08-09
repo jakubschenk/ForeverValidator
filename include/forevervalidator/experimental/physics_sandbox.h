@@ -145,6 +145,17 @@ struct PhysicsSandboxCarState {
     float turboBoostFactor = 0.0f;
     std::array<bool, 4> wheelSliding{{false, false, false, false}};
     std::array<std::uint16_t, 4> wheelSurface{{0u, 0u, 0u, 0u}};
+    // World-space accepted collision contacts and unit surface normals. When
+    // no finite accepted contact is available, the point falls back to the
+    // wheel-bottom position and the normal falls back to the car's world up.
+    // These fields are appended to preserve offsets of the older public state.
+    std::array<Vector3, 4> wheelContactPoint{};
+    std::array<Vector3, 4> wheelContactNormal{{
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+    }};
 };
 
 struct PhysicsSandboxCollisionTriangle {

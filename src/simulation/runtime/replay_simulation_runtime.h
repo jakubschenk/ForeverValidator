@@ -39,6 +39,13 @@ struct ReplayRaceCameraVehicleState {
     std::array<bool, 4> wheelContact{{true, true, true, true}};
     std::array<bool, 4> wheelHasSurface{{true, true, true, true}};
     std::array<GmVec3, 4> wheelGroundPosition{};
+    std::array<GmVec3, 4> wheelContactPoint{};
+    std::array<GmVec3, 4> wheelContactNormal{{
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+    }};
     GmVec3 cameraSupportUp{0.0f, 1.0f, 0.0f};
 };
 

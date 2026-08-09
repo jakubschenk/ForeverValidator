@@ -29,6 +29,18 @@ ReplaySimulationInstanceClone BuildState() {
         wheel.realTimeState.wheelAngularSpeed =
                 20.0f + static_cast<float>(index);
         wheel.realTimeState.contactPresent = (index & 1u) != 0u;
+        wheel.realTimeState.contactNormalSampleCount =
+                static_cast<u32>(index + 1u);
+        wheel.realTimeState.latestContactPoint = {
+                100.0f + static_cast<float>(index),
+                200.0f + static_cast<float>(index),
+                300.0f + static_cast<float>(index),
+        };
+        wheel.realTimeState.accumulatedContactNormal = {
+                0.1f * static_cast<float>(index + 1u),
+                0.2f * static_cast<float>(index + 1u),
+                0.3f * static_cast<float>(index + 1u),
+        };
         state.runtime.vehicle.wheelSurfaces.movedByUpdateSurface[index] =
                 (index & 1u) == 0u;
     }
@@ -118,6 +130,38 @@ int main() {
         decoded.runtime.finishTime != original.runtime.finishTime) {
         std::cerr << "state round trip changed CUDA transport data\n";
         return 1;
+    }
+    for (std::size_t index = 0u; index < 4u; ++index) {
+        const auto &expected =
+                original.runtime.vehicle.car.wheels[index].realTimeState;
+        const auto &cudaWheel = encodedA.vehicle.wheels.values[index].realTime;
+        const auto &roundTrip =
+                decoded.runtime.vehicle.car.wheels[index].realTimeState;
+        if (cudaWheel.contactNormalSampleCount !=
+                    expected.contactNormalSampleCount ||
+            cudaWheel.latestContactPoint.x != expected.latestContactPoint.x ||
+            cudaWheel.latestContactPoint.y != expected.latestContactPoint.y ||
+            cudaWheel.latestContactPoint.z != expected.latestContactPoint.z ||
+            cudaWheel.accumulatedContactNormal.x !=
+                    expected.accumulatedContactNormal.x ||
+            cudaWheel.accumulatedContactNormal.y !=
+                    expected.accumulatedContactNormal.y ||
+            cudaWheel.accumulatedContactNormal.z !=
+                    expected.accumulatedContactNormal.z ||
+            roundTrip.contactNormalSampleCount !=
+                    expected.contactNormalSampleCount ||
+            roundTrip.latestContactPoint.x != expected.latestContactPoint.x ||
+            roundTrip.latestContactPoint.y != expected.latestContactPoint.y ||
+            roundTrip.latestContactPoint.z != expected.latestContactPoint.z ||
+            roundTrip.accumulatedContactNormal.x !=
+                    expected.accumulatedContactNormal.x ||
+            roundTrip.accumulatedContactNormal.y !=
+                    expected.accumulatedContactNormal.y ||
+            roundTrip.accumulatedContactNormal.z !=
+                    expected.accumulatedContactNormal.z) {
+            std::cerr << "wheel contact state did not survive CUDA transport\n";
+            return 1;
+        }
     }
     ReplaySimulationInstanceClone checkpointBoundary = BuildState();
     checkpointBoundary.race.checkpointSlotsPassed.resize(
