@@ -208,6 +208,27 @@ Vector3 ToPublicVector(const GmVec3 &value) {
     return {value.x, value.y, value.z};
 }
 
+bool IsFiniteVector(const GmVec3 &value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+bool NormalizeFiniteVector(GmVec3 &value) {
+    if (!IsFiniteVector(value)) {
+        return false;
+    }
+    const float lengthSquared =
+            value.x * value.x + value.y * value.y + value.z * value.z;
+    if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-12f) {
+        return false;
+    }
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    value.x *= inverseLength;
+    value.y *= inverseLength;
+    value.z *= inverseLength;
+    return IsFiniteVector(value);
+}
+
 ValidationDeviation ToPublicDeviation(
         const ReplayValidationDeviation &value) {
     ValidationDeviation result;
@@ -1830,6 +1851,10 @@ struct PhysicsSandbox::Impl {
              ++index) {
             view.car.wheelGroundPosition[index] =
                     ToPublicVector(state->wheelGroundPosition[index]);
+            view.car.wheelContactPoint[index] =
+                    ToPublicVector(state->wheelContactPoint[index]);
+            view.car.wheelContactNormal[index] =
+                    ToPublicVector(state->wheelContactNormal[index]);
         }
         view.car.cameraSupportUp = ToPublicVector(state->cameraSupportUp);
         view.car.localSpeed = ToPublicVector(state->localSpeed);
@@ -3520,13 +3545,46 @@ PhysicsSandboxCudaSearchSession::Impl::Convert(
     const std::size_t wheelCount = std::min<std::size_t>(
             best.state.vehicle.wheels.count,
             view.car.wheelGroundPosition.size());
+    GmVec3 carUp;
+    carUp.SetMult(GmVec3{0.0f, 1.0f, 0.0f}, frame.rotation);
+    if (!NormalizeFiniteVector(carUp)) {
+        carUp = {0.0f, 1.0f, 0.0f};
+    }
     for (std::size_t index = 0u; index < wheelCount; ++index) {
+        const simulation::CudaWheelState &cudaWheel =
+                best.state.vehicle.wheels.values[index];
         const CSceneVehicleCar::SSimulationWheel::SState &physicsWheel =
-                best.state.vehicle.wheels.values[index].currentPhysics;
+                cudaWheel.currentPhysics;
         const CSceneVehicleCar::SSimulationWheel::SState &asyncWheel =
                 best.state.vehiclePassthrough.wheels[index].currentAsync;
         view.car.wheelGroundPosition[index] = ToPublicVector(
                 physicsWheel.worldSurfacePoint);
+        GmVec3 worldContactPoint = physicsWheel.worldSurfacePoint;
+        GmVec3 worldContactNormal = carUp;
+        const auto &realTime = cudaWheel.realTime;
+        const bool acceptedContact = realTime.contactPresent &&
+                realTime.contactNormalSampleCount > 0u;
+        if (acceptedContact && IsFiniteVector(realTime.latestContactPoint)) {
+            worldContactPoint.SetMult(realTime.latestContactPoint,
+                                      frame.rotation);
+            worldContactPoint.x += frame.position.x;
+            worldContactPoint.y += frame.position.y;
+            worldContactPoint.z += frame.position.z;
+            if (!IsFiniteVector(worldContactPoint)) {
+                worldContactPoint = physicsWheel.worldSurfacePoint;
+            }
+        }
+        if (acceptedContact) {
+            worldContactNormal.SetMult(realTime.accumulatedContactNormal,
+                                       frame.rotation);
+            if (!NormalizeFiniteVector(worldContactNormal)) {
+                worldContactNormal = carUp;
+            }
+        }
+        view.car.wheelContactPoint[index] =
+                ToPublicVector(worldContactPoint);
+        view.car.wheelContactNormal[index] =
+                ToPublicVector(worldContactNormal);
         view.car.wheelContact[index] = physicsWheel.contactPresent;
         view.car.wheelHasSurface[index] = asyncWheel.contactPresent;
         view.car.wheelSliding[index] =

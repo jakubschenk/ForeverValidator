@@ -423,11 +423,20 @@ bool TestReusableLocalRenderSceneBuilder() {
 
     forevervalidator::experimental::PhysicsSandboxCarState car;
     car.wheelGroundPosition[2] = {4.0f, 5.0f, 6.0f};
+    car.wheelContactPoint[2] = {7.0f, 8.0f, 9.0f};
+    car.wheelContactNormal[2] = {0.0f, 0.0f, 1.0f};
     okay &= Check(
             NearlyEqual(car.wheelGroundPosition[2].x, 4.0f) &&
                     NearlyEqual(car.wheelGroundPosition[2].y, 5.0f) &&
-                    NearlyEqual(car.wheelGroundPosition[2].z, 6.0f),
-            "public wheel-ground position state was not writable");
+                    NearlyEqual(car.wheelGroundPosition[2].z, 6.0f) &&
+                    NearlyEqual(car.wheelContactPoint[2].x, 7.0f) &&
+                    NearlyEqual(car.wheelContactPoint[2].y, 8.0f) &&
+                    NearlyEqual(car.wheelContactPoint[2].z, 9.0f) &&
+                    NearlyEqual(car.wheelContactNormal[2].x, 0.0f) &&
+                    NearlyEqual(car.wheelContactNormal[2].y, 0.0f) &&
+                    NearlyEqual(car.wheelContactNormal[2].z, 1.0f) &&
+                    NearlyEqual(car.wheelContactNormal[0].y, 1.0f),
+            "public wheel contact state was not writable or safely defaulted");
 
     EmptyMaterialRepository materialRepository;
     StaticSolidArchiveLoadSession archive;

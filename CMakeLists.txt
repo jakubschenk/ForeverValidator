@@ -7,6 +7,10 @@ option(FOREVERVALIDATOR_BUILD_CLI "Build the ForeverValidator CLI"
 option(FOREVERVALIDATOR_BUILD_TESTS "Build ForeverValidator public tests" OFF)
 option(FOREVERVALIDATOR_BUILD_BENCHMARKS
        "Build ForeverValidator developer benchmarks" OFF)
+set(FOREVERVALIDATOR_WHEEL_CONTACT_TEST_PACKS "" CACHE PATH
+    "Installed TM Forever Packs directory for the wheel-contact integration test")
+set(FOREVERVALIDATOR_WHEEL_CONTACT_TEST_REPLAY "" CACHE FILEPATH
+    "Replay.Gbx fixture for the wheel-contact integration test")
 option(FOREVERVALIDATOR_ENABLE_RELEASE_IPO
        "Enable supported GCC interprocedural optimization in Release builds"
        ON)
@@ -911,8 +915,16 @@ if(FOREVERVALIDATOR_BUILD_TESTS)
         forevervalidator_native)
     forevervalidator_configure_target(
         forevervalidator-wheel-ground-state-fixture-tests)
-    add_test(NAME forevervalidator-wheel-ground-state-fixture
-        COMMAND forevervalidator-wheel-ground-state-fixture-tests)
+    if(FOREVERVALIDATOR_WHEEL_CONTACT_TEST_PACKS AND
+       FOREVERVALIDATOR_WHEEL_CONTACT_TEST_REPLAY)
+        add_test(NAME forevervalidator-wheel-ground-state-fixture
+            COMMAND forevervalidator-wheel-ground-state-fixture-tests
+                "${FOREVERVALIDATOR_WHEEL_CONTACT_TEST_PACKS}"
+                "${FOREVERVALIDATOR_WHEEL_CONTACT_TEST_REPLAY}")
+    else()
+        add_test(NAME forevervalidator-wheel-ground-state-fixture
+            COMMAND forevervalidator-wheel-ground-state-fixture-tests)
+    endif()
     set_tests_properties(
         forevervalidator-wheel-ground-state-fixture PROPERTIES
         SKIP_RETURN_CODE 77

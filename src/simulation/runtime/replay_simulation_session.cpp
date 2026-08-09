@@ -1580,6 +1580,8 @@ ReplaySimulationSession::CurrentState() const {
     result.wheelContact = camera.wheelContact;
     result.wheelHasSurface = camera.wheelHasSurface;
     result.wheelGroundPosition = camera.wheelGroundPosition;
+    result.wheelContactPoint = camera.wheelContactPoint;
+    result.wheelContactNormal = camera.wheelContactNormal;
     result.cameraSupportUp = camera.cameraSupportUp;
     const CSceneVehicleCar::SConditionState condition =
             impl->instance.runtime->CurrentConditionState();
